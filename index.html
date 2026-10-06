@@ -52,6 +52,10 @@
     background: var(--accent); color: #fff; font-weight: 800; font-size: 1.25rem;
     padding: 2px 12px; border-radius: 10px; min-width: 48px; text-align: center;
   }
+  .route.r-24, .route.r-33 { background: #f4a300; color: #1a1a1a; }
+  .route.r-D { background: #b5123e; color: #fff; }
+  .route.r-545 { background: #1f2f86; color: #fff; }
+  .route.sm { font-size: .95rem; padding: 1px 8px; min-width: 0; vertical-align: 1px; }
   .head { color: var(--muted); font-size: .9rem; flex: 1; min-width: 0; }
   .badge-best { background: var(--best); color: #fff; font-size: .75rem; font-weight: 700; padding: 3px 8px; border-radius: 8px; }
   .big { font-size: 2.1rem; font-weight: 800; line-height: 1.1; margin-bottom: 10px; }
@@ -313,13 +317,13 @@ function render() {
       else {
         rows.push(`<div class="row"><span class="k">Arrive 3rd &amp; Pike</span><span class="v">${fmt(o.arrive3rd)}<span class="tag est">EST</span></span></div>`);
         rows.push(o.bus
-          ? `<div class="row"><span class="k">Catch 545 at</span><span class="v">${fmt(o.bus)}${tag(o.busLive)}</span></div>
+          ? `<div class="row"><span class="k">Catch <span class="route r-545 sm">545</span> at</span><span class="v">${fmt(o.bus)}${tag(o.busLive)}</span></div>
              <div class="row"><span class="k">Wait at Westlake</span><span class="v">${mins(o.wait)}</span></div>
              ${o.end ? `<div class="row"><span class="k">Arrive ${esc(o.endName.replace(/\s*(Park\s*(&|and)\s*Ride|P&R).*$/i, "") + " P&R")}</span><span class="v">${fmt(o.end)}<span class="tag est">EST</span></span></div>` : ""}`
           : `<div class="row"><span class="k">Catch 545</span><span class="v">none found</span></div>`);
       }
       return `<section class="card${o.best ? " best" : ""}">
-        <div class="top"><span class="route">${esc(o.route)}</span><span class="head">${esc(o.headsign)}</span>${o.best ? `<span class="badge-best">EARLIEST 545</span>` : ""}</div>
+        <div class="top"><span class="route r-${esc(normRoute(o.route))}">${esc(o.route)}</span><span class="head">${esc(o.headsign)}</span>${o.best ? `<span class="badge-best">EARLIEST 545</span>` : ""}</div>
         <div class="big">${mins(o.board - now)} <small>· ${fmt(o.board)}${tag(o.boardLive)}</small></div>
         ${rows.join("")}
       </section>`;
