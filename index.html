@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#0f1720">
+<title>Bus Commute</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Commute">
+<style>
+  :root {
+    --bg: #f4f6f8; --card: #ffffff; --text: #111827; --muted: #5b6573; --line: #e2e6ea;
+    --accent: #0b6bcb; --best: #0a8f4e; --best-bg: #e7f6ee; --warn: #b45309; --warn-bg: #fff4e0;
+    --err: #b42318; --err-bg: #fdecea; --live: #0a8f4e; --sched: #8a6a00;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1720; --card: #18222e; --text: #f1f5f9; --muted: #9aa7b6; --line: #2a3745;
+      --accent: #5aa9ff; --best: #3ddc84; --best-bg: #123222; --warn: #fbbf24; --warn-bg: #3a2c0b;
+      --err: #ff8a80; --err-bg: #3b1613; --live: #3ddc84; --sched: #e0b84c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 18px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: max(16px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom));
+  }
+  main { max-width: 560px; margin: 0 auto; }
+  header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 12px; gap: 8px; }
+  h1 { font-size: 1.3rem; margin: 0; }
+  #updated { color: var(--muted); font-size: .85rem; text-align: right; }
+  button.refresh {
+    background: none; border: 1px solid var(--line); color: var(--text); border-radius: 10px;
+    padding: 6px 12px; font: inherit; font-size: .85rem; cursor: pointer; margin-left: 8px;
+  }
+  .banner { border-radius: 12px; padding: 12px 14px; margin-bottom: 12px; font-size: .95rem; }
+  .banner.err { background: var(--err-bg); color: var(--err); }
+  .banner.warn { background: var(--warn-bg); color: var(--warn); }
+  .card {
+    background: var(--card); border: 2px solid var(--line); border-radius: 18px;
+    padding: 16px; margin-bottom: 12px;
+  }
+  .card.best { border-color: var(--best); background: var(--best-bg); }
+  .top { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
+  .route {
+    background: var(--accent); color: #fff; font-weight: 800; font-size: 1.25rem;
+    padding: 2px 12px; border-radius: 10px; min-width: 48px; text-align: center;
+  }
+  .head { color: var(--muted); font-size: .9rem; flex: 1; min-width: 0; }
+  .badge-best { background: var(--best); color: #fff; font-size: .75rem; font-weight: 700; padding: 3px 8px; border-radius: 8px; }
+  .big { font-size: 2.1rem; font-weight: 800; line-height: 1.1; margin-bottom: 10px; }
+  .big small { font-size: 1rem; font-weight: 500; color: var(--muted); }
+  .row { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 6px 0; border-top: 1px solid var(--line); }
+  .row .k { color: var(--muted); font-size: .95rem; }
+  .row .v { font-weight: 700; font-size: 1.15rem; text-align: right; }
+  .tag { font-size: .65rem; font-weight: 800; letter-spacing: .04em; padding: 2px 6px; border-radius: 6px; border: 1px solid currentColor; vertical-align: middle; margin-left: 6px; }
+  .tag.live { color: var(--live); } .tag.sched { color: var(--sched); } .tag.est { color: var(--muted); }
+  .empty { text-align: center; color: var(--muted); padding: 32px 8px; }
+  footer { color: var(--muted); font-size: .78rem; margin-top: 16px; line-height: 1.5; }
+  footer a { color: var(--accent); cursor: pointer; text-decoration: underline; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Bus Commute</h1>
+    <div><span id="updated">Loading…</span><button class="refresh" id="refreshBtn" type="button">Refresh</button></div>
+  </header>
+  <div id="banners"></div>
+  <div id="cards"></div>
+  <footer id="foot"></footer>
+</main>
+
+<script>
+// ===== Edit these =====
+const API_KEY = "TEST";                       // swap in your real OneBusAway key
+const ORIGIN_STOP = "1_14070";                // Elliott Ave W & W Prospect St (NW-bound pole; auto-corrected to downtown-bound)
+const ORIGIN_ROUTES = ["24", "33", "D Line"]; // matched tolerantly ("D", "D Line", "RapidRide D Line")
+const TRANSFER_STOP_NAME = "3rd Ave & Pike St";
+const WESTLAKE_STOP = "1_700";                // 4th Ave & Pike St
+const WESTLAKE_ROUTE = "545";
+const WALK_MINUTES = 1;
+const REFRESH_SECONDS = 30;
+const MAX_TRIPS = 4;                          // how many upcoming origin trips to evaluate
+const NEARBY_RADIUS_M = 150;                  // search radius for the opposite-direction pole
+// ======================
+
+const BASE = "https://api.pugetsound.onebusaway.org/api/where/";
+const DOWNTOWN_RE = /downtown|pioneer|stadium|sodo|king street|\bseattle\b/i;
+const OPPOSITE = { N: "S", S: "N", E: "W", W: "E", NE: "SW", SW: "NE", NW: "SE", SE: "NW" };
+
+// A key passed as ?key=XXXX is saved in this browser only, so it never has to be committed to a public repo.
+const KEY = (() => {
+  try {
+    const q = new URLSearchParams(location.search).get("key");
+    if (q) { localStorage.setItem("obaKey", q); history.replaceState(null, "", location.pathname); }
+    return localStorage.getItem("obaKey") || API_KEY;
+  } catch { return API_KEY; }
+})();
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const normRoute = (s) => String(s || "").toUpperCase().replace(/RAPIDRIDE/g, "").replace(/\bLINE\b/g, "").replace(/\s+/g, "").trim();
+const WANTED = new Set(ORIGIN_ROUTES.map(normRoute));
+const routeOk = (a) => WANTED.has(normRoute(a.routeShortName));
+const normName = (s) => String(s || "").toLowerCase().replace(/\bavenue\b/g, "ave").replace(/\bstreet\b/g, "st")
+  .replace(/[^a-z0-9& ]/g, " ").replace(/\s+/g, " ").trim();
+const TARGET_NAME = normName(TRANSFER_STOP_NAME);
+
+class RateLimitError extends Error {}
+
+async function api(path, params = {}) {
+  const url = new URL(BASE + path + ".json");
+  url.searchParams.set("key", KEY);
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 15000);
+  try {
+    const f = window.__mockFetch || fetch;
+    const res = await f(url.toString(), { signal: ctl.signal });
+    if (res.status === 429) throw new RateLimitError("Rate limited");
+    let body = null;
+    try { body = await res.json(); } catch { /* handled below */ }
+    if (body && body.code === 429) throw new RateLimitError("Rate limited");
+    if (!res.ok || !body || body.code !== 200) {
+      throw new Error(`API error ${res.status}${body && body.text ? ": " + body.text : ""}`);
+    }
+    return body;
+  } finally { clearTimeout(timer); }
+}
+
+// ---------- state ----------
+let origin = null;          // { id, name, direction, confirmed }
+let transferStopId = null;
+const rideSecs = new Map(); // tripId -> seconds from origin to 3rd & Pike
+let model = null;           // last good result
+let busy = false, timer = null, backoff = 0, lastError = null;
+
+// ---------- origin resolution ----------
+async function getArrivals(stopId, minutesAfter) {
+  const r = await api(`arrivals-and-departures-for-stop/${stopId}`, { minutesBefore: 2, minutesAfter });
+  return r.data.entry.arrivalsAndDepartures || [];
+}
+
+async function resolveOrigin(force) {
+  const ck = "origin:" + ORIGIN_STOP;
+  if (!force) {
+    try { const c = JSON.parse(localStorage.getItem(ck)); if (c) { origin = c; return; } } catch {}
+  }
+  const s = (await api(`stop/${ORIGIN_STOP}`)).data.entry;
+  console.log(`[origin] configured ${s.id} "${s.name}" dir=${s.direction} @ ${s.lat},${s.lon}`);
+  const near = (await api("stops-for-location", { lat: s.lat, lon: s.lon, radius: NEARBY_RADIUS_M })).data.list
+    .filter((x) => x.id !== s.id)
+    .map((x) => ({ ...x, d: Math.hypot((x.lat - s.lat) * 111000, (x.lon - s.lon) * 76000) }))
+    .sort((a, b) => a.d - b.d);
+  const opp = OPPOSITE[s.direction];
+  const ordered = [...near.filter((x) => x.direction === opp), ...near.filter((x) => x.direction !== opp), s].slice(0, 5);
+  console.log("[origin] candidates:", ordered.map((c) => `${c.id} (${c.direction}) "${c.name}"`));
+  for (const c of ordered) {
+    const matching = (await getArrivals(c.id, 60)).filter(routeOk);
+    const downtown = matching.filter((a) => DOWNTOWN_RE.test(a.tripHeadsign));
+    console.log(`[origin] ${c.id} "${c.name}" (${c.direction}): ${matching.length} matching arrivals, ${downtown.length} downtown; headsigns =`,
+      [...new Set(matching.map((a) => a.tripHeadsign))]);
+    if (downtown.length) {
+      origin = { id: c.id, name: c.name, direction: c.direction, confirmed: true };
+      localStorage.setItem(ck, JSON.stringify(origin));
+      console.log(`[origin] USING ${origin.id} (configured: ${s.id})`);
+      return;
+    }
+  }
+  const guess = near.find((x) => x.direction === opp);
+  if (!guess) throw new Error("Couldn't find a downtown-bound stop with arrivals for these routes. Try again later.");
+  origin = { id: guess.id, name: guess.name, direction: guess.direction, confirmed: false };
+  console.warn(`[origin] no downtown arrivals right now; provisionally using opposite-direction stop ${guess.id}`);
+}
+
+// ---------- ride time ----------
+function findTransfer(td, originId) {
+  const stops = new Map((td.data.references.stops || []).map((x) => [x.id, x.name]));
+  const times = td.data.entry.schedule.stopTimes || [];
+  const o = times.findIndex((t) => t.stopId === originId);
+  if (o < 0) return null;
+  const hit = (t) => {
+    const n = normName(stops.get(t.stopId));
+    return n === TARGET_NAME || (n.includes("3rd") && n.includes("pike"));
+  };
+  const idx = times.findIndex((t, i) => i > o && (t.stopId === transferStopId || hit(t)));
+  if (idx < 0) return null;
+  transferStopId = times[idx].stopId;
+  return times[idx].arrivalTime - times[o].arrivalTime;
+}
+
+async function rideFor(a) {
+  if (rideSecs.has(a.tripId)) return rideSecs.get(a.tripId);
+  const td = await api(`trip-details/${encodeURIComponent(a.tripId)}`, { serviceDate: a.serviceDate });
+  const secs = findTransfer(td, origin.id);
+  if (secs == null) return null;
+  rideSecs.set(a.tripId, secs);
+  return secs;
+}
+
+// Scheduled minutes from the Westlake stop to the 545 trip's final stop (cached per trip).
+const endSecs = new Map();
+async function endFor(a) {
+  if (endSecs.has(a.tripId)) return endSecs.get(a.tripId);
+  const td = await api(`trip-details/${encodeURIComponent(a.tripId)}`, { serviceDate: a.serviceDate });
+  const times = td.data.entry.schedule.stopTimes || [];
+  const from = times.find((t) => t.stopId === WESTLAKE_STOP);
+  const last = times[times.length - 1];
+  if (!from || !last) return null;
+  const name = ((td.data.references.stops || []).find((s) => s.id === last.stopId) || {}).name || "last stop";
+  const res = { secs: last.arrivalTime - (from.departureTime ?? from.arrivalTime), name };
+  endSecs.set(a.tripId, res);
+  return res;
+}
+
+// ---------- main refresh ----------
+const live = (a, pred, sched) => (a.predicted && a[pred] > 0) ? { t: a[pred], live: true } : { t: a[sched], live: false };
+
+async function refresh(manual) {
+  if (busy) return;
+  busy = true;
+  $("refreshBtn").disabled = true;
+  try {
+    if (!origin) await resolveOrigin(false);
+    const now = Date.now();
+    const arr = (await getArrivals(origin.id, 60)).filter(routeOk)
+      .map((a) => ({ a, ...live(a, "predictedArrivalTime", "scheduledArrivalTime") }))
+      .filter((x) => x.t >= now - 30000)
+      .sort((x, y) => x.t - y.t).slice(0, MAX_TRIPS);
+
+    const rides = await Promise.allSettled(arr.map((x) => rideFor(x.a)));
+
+    const wl = (await getArrivals(WESTLAKE_STOP, 120)).filter((a) => normRoute(a.routeShortName) === WESTLAKE_ROUTE);
+    const toRedmond = wl.filter((a) => /redmond/i.test(a.tripHeadsign));
+    const buses545 = (toRedmond.length ? toRedmond : wl)
+      .map((a) => ({ a, ...live(a, "predictedDepartureTime", "scheduledDepartureTime") }))
+      .map((x) => (x.t > 0 ? x : { ...x, ...live(x.a, "predictedArrivalTime", "scheduledArrivalTime") }))
+      .sort((x, y) => x.t - y.t);
+
+    const options = arr.map((x, i) => {
+      const r = rides[i];
+      const ride = r.status === "fulfilled" ? r.value : null;
+      const o = { route: x.a.routeShortName, headsign: x.a.tripHeadsign, board: x.t, boardLive: x.live, ride };
+      if (ride != null) {
+        o.arrive3rd = x.t + ride * 1000;
+        const ready = o.arrive3rd + WALK_MINUTES * 60000;
+        const b = buses545.find((y) => y.t >= ready);
+        if (b) { o.bus = b.t; o.busLive = b.live; o.wait = b.t - ready; o.busA = b.a; }
+      }
+      return o;
+    });
+    // Estimated arrival at the 545's last stop (Bear Creek P&R): live departure + scheduled run time.
+    const uniq = [...new Map(options.filter((o) => o.busA).map((o) => [o.busA.tripId, o.busA])).values()];
+    const ends = new Map();
+    (await Promise.allSettled(uniq.map(async (a) => [a.tripId, await endFor(a)]))).forEach((r) => { if (r.status === "fulfilled" && r.value[1]) ends.set(...r.value); });
+    options.forEach((o) => {
+      const e = o.busA && ends.get(o.busA.tripId);
+      if (e) { o.end = o.bus + e.secs * 1000; o.endName = e.name; }
+    });
+    const withBus = options.filter((o) => o.bus);
+    if (withBus.length) withBus.reduce((m, o) => (o.bus < m.bus || (o.bus === m.bus && o.arrive3rd < m.arrive3rd) ? o : m)).best = true;
+
+    model = { options, at: Date.now(), noBuses: !arr.length, no545: arr.length && !buses545.length };
+    lastError = null; backoff = 0;
+  } catch (e) {
+    console.error(e);
+    lastError = e;
+    backoff = e instanceof RateLimitError ? Math.min(backoff ? backoff * 2 : REFRESH_SECONDS * 2, 300) : 0;
+  } finally {
+    busy = false;
+    $("refreshBtn").disabled = false;
+    render();
+    schedule();
+  }
+}
+
+function schedule() {
+  clearTimeout(timer);
+  timer = setTimeout(refresh, (backoff || REFRESH_SECONDS) * 1000);
+}
+
+// ---------- rendering ----------
+const fmt = (t) => new Date(t).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+const mins = (ms) => { const m = Math.round(ms / 60000); return m <= 0 ? "Now" : m + " min"; };
+const tag = (isLive) => `<span class="tag ${isLive ? "live" : "sched"}">${isLive ? "LIVE" : "SCHED"}</span>`;
+
+function render() {
+  const banners = [];
+  if (KEY === "TEST") banners.push(`<div class="banner warn">Using the shared <b>TEST</b> key, which is heavily rate-limited. Add your real key (see README).</div>`);
+  if (lastError instanceof RateLimitError) {
+    banners.push(`<div class="banner err">Rate limited by the API. Retrying in ${backoff}s${model ? " (showing last good data)" : ""}.</div>`);
+  } else if (lastError) {
+    banners.push(`<div class="banner err">${esc(lastError.message === "Failed to fetch" ? "Network error: check your connection." : lastError.message)}${model ? " Showing last good data." : ""}</div>`);
+  }
+  if (origin && !origin.confirmed) banners.push(`<div class="banner warn">No downtown arrivals right now, so the stop direction is unconfirmed.</div>`);
+  $("banners").innerHTML = banners.join("");
+
+  const cards = $("cards");
+  if (!model) { cards.innerHTML = lastError ? "" : `<div class="empty">Loading…</div>`; }
+  else if (model.noBuses) cards.innerHTML = `<div class="empty">No upcoming 24 / 33 / D Line buses in the next hour.</div>`;
+  else {
+    const now = Date.now();
+    cards.innerHTML = model.options.map((o) => {
+      const rows = [];
+      if (o.ride == null) rows.push(`<div class="row"><span class="k">Ride time</span><span class="v">unavailable</span></div>`);
+      else {
+        rows.push(`<div class="row"><span class="k">Arrive 3rd &amp; Pike</span><span class="v">${fmt(o.arrive3rd)}<span class="tag est">EST</span></span></div>`);
+        rows.push(o.bus
+          ? `<div class="row"><span class="k">Catch 545 at</span><span class="v">${fmt(o.bus)}${tag(o.busLive)}</span></div>
+             <div class="row"><span class="k">Wait at Westlake</span><span class="v">${mins(o.wait)}</span></div>
+             ${o.end ? `<div class="row"><span class="k">Arrive ${esc(o.endName.replace(/\s*(Park\s*(&|and)\s*Ride|P&R).*$/i, "") + " P&R")}</span><span class="v">${fmt(o.end)}<span class="tag est">EST</span></span></div>` : ""}`
+          : `<div class="row"><span class="k">Catch 545</span><span class="v">none found</span></div>`);
+      }
+      return `<section class="card${o.best ? " best" : ""}">
+        <div class="top"><span class="route">${esc(o.route)}</span><span class="head">${esc(o.headsign)}</span>${o.best ? `<span class="badge-best">EARLIEST 545</span>` : ""}</div>
+        <div class="big">${mins(o.board - now)} <small>· ${fmt(o.board)}${tag(o.boardLive)}</small></div>
+        ${rows.join("")}
+      </section>`;
+    }).join("") + (model.no545 ? `<div class="banner warn">No 545 departures found at Westlake in the next 2 hours.</div>` : "");
+  }
+
+  $("updated").textContent = model ? "Updated " + new Date(model.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" }) : "";
+  $("foot").innerHTML = `Boarding stop: ${origin ? esc(origin.id + " · " + origin.name + " (" + origin.direction + ")") : "…"}
+    · <a id="redetect">re-detect stop</a><br>
+    Board and 545 times are <b>LIVE</b> when the bus reports a position, else <b>SCHED</b>. Ride time is scheduled, so "arrive" is an estimate.
+    Walk allowance: ${WALK_MINUTES} min. Refreshes every ${REFRESH_SECONDS}s.`;
+  const r = $("redetect");
+  if (r) r.onclick = () => { origin = null; try { localStorage.removeItem("origin:" + ORIGIN_STOP); } catch {} rideSecs.clear(); transferStopId = null; refresh(true); };
+}
+
+$("refreshBtn").onclick = () => { clearTimeout(timer); refresh(true); };
+setInterval(() => { if (model) render(); }, 10000);  // keep "min away" ticking between fetches
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) clearTimeout(timer);
+  else if (!model || Date.now() - model.at > REFRESH_SECONDS * 1000) refresh();
+  else schedule();
+});
+
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+
+(async () => {
+  if (new URLSearchParams(location.search).has("mock")) {
+    await new Promise((res, rej) => { const s = document.createElement("script"); s.src = "mock.js"; s.onload = res; s.onerror = rej; document.head.appendChild(s); });
+  }
+  render();
+  refresh();
+})();
+</script>
+</body>
+</html>
