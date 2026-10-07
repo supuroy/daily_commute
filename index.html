@@ -132,6 +132,7 @@ async function api(path, params = {}) {
     let body = null;
     try { body = await res.json(); } catch { /* handled below */ }
     if (body && body.code === 429) throw new RateLimitError("Rate limited");
+    if (body && body.currentTime) skew = body.currentTime - Date.now();
     if (!res.ok || !body || body.code !== 200) {
       throw new Error(`API error ${res.status}${body && body.text ? ": " + body.text : ""}`);
     }
@@ -144,7 +145,9 @@ let origin = null;          // { id, name, direction, confirmed }
 let transferStopId = null;
 const rideSecs = new Map(); // tripId -> seconds from origin to 3rd & Pike
 let model = null;           // last good result
-let busy = false, timer = null, backoff = 0, lastError = null;
+let busy = false, timer = null, backoff = 0, lastError = null, emptyStreak = 0, seen = "";
+let skew = 0;               // server clock minus device clock, so a wrong device clock can't hide buses
+const nowMs = () => Date.now() + skew;
 
 // ---------- origin resolution ----------
 async function getArrivals(stopId, minutesAfter) {
@@ -233,11 +236,19 @@ async function refresh(manual) {
   $("refreshBtn").disabled = true;
   try {
     if (!origin) await resolveOrigin(false);
-    const now = Date.now();
-    const arr = (await getArrivals(origin.id, 60)).filter(routeOk)
+    const all = await getArrivals(origin.id, 60);
+    const now = nowMs();
+    const arr = all.filter(routeOk)
       .map((a) => ({ a, ...live(a, "predictedArrivalTime", "scheduledArrivalTime") }))
       .filter((x) => x.t >= now - 30000)
       .sort((x, y) => x.t - y.t).slice(0, MAX_TRIPS);
+    seen = `${all.length} arrivals at ${origin.id}` + (all.length ? ` (${[...new Set(all.map((a) => a.routeShortName))].join(", ")})` : "");
+    console.log("[refresh]", seen, "| matching:", arr.length);
+    // Repeated empty results may mean the cached stop is wrong or stale: re-detect it next time.
+    if (!arr.length && ++emptyStreak >= 2) {
+      origin = null; emptyStreak = 0;
+      try { localStorage.removeItem("origin:" + ORIGIN_STOP); } catch {}
+    } else if (arr.length) emptyStreak = 0;
 
     const rides = await Promise.allSettled(arr.map((x) => rideFor(x.a)));
 
@@ -271,7 +282,7 @@ async function refresh(manual) {
     const withBus = options.filter((o) => o.bus);
     if (withBus.length) withBus.reduce((m, o) => (o.bus < m.bus || (o.bus === m.bus && o.arrive3rd < m.arrive3rd) ? o : m)).best = true;
 
-    model = { options, at: Date.now(), noBuses: !arr.length, no545: arr.length && !buses545.length };
+    model = { options, seen, at: Date.now(), noBuses: !arr.length, no545: arr.length && !buses545.length };
     lastError = null; backoff = 0;
   } catch (e) {
     console.error(e);
@@ -308,9 +319,9 @@ function render() {
 
   const cards = $("cards");
   if (!model) { cards.innerHTML = lastError ? "" : `<div class="empty">Loading…</div>`; }
-  else if (model.noBuses) cards.innerHTML = `<div class="empty">No upcoming 24 / 33 / D Line buses in the next hour.</div>`;
+  else if (model.noBuses) cards.innerHTML = `<div class="empty">No upcoming 24 / 33 / D Line buses in the next hour.<br><small>${esc(model.seen)}. Retrying; the stop will be re-detected if this keeps happening.</small></div>`;
   else {
-    const now = Date.now();
+    const now = nowMs();
     cards.innerHTML = model.options.map((o) => {
       const rows = [];
       if (o.ride == null) rows.push(`<div class="row"><span class="k">Ride time</span><span class="v">unavailable</span></div>`);
