@@ -333,6 +333,16 @@ function stopTrack() {
   refresh(true);
 }
 
+// Upcoming 545s from Westlake (4th & Pike), soonest first, with live times where available.
+async function load545s() {
+  const wl = (await getArrivals(WESTLAKE_STOP, 120)).filter((a) => normRoute(a.routeShortName) === WESTLAKE_ROUTE);
+  const toRedmond = wl.filter((a) => /redmond/i.test(a.tripHeadsign));
+  return (toRedmond.length ? toRedmond : wl)
+    .map((a) => ({ a, ...live(a, "predictedDepartureTime", "scheduledDepartureTime") }))
+    .map((x) => (x.t > 0 ? x : { ...x, ...live(x.a, "predictedArrivalTime", "scheduledArrivalTime") }))
+    .sort((x, y) => x.t - y.t);
+}
+
 async function loadTrack() {
   const td = await api(`trip-details/${encodeURIComponent(track.tripId)}`, { serviceDate: track.serviceDate });
   const e = td.data.entry, st = e.schedule.stopTimes || [];
@@ -351,9 +361,22 @@ async function loadTrack() {
   const passed = ni < 0 || ni > di;
   const left = passed ? 0 : di - ni + 1;           // stops to go, counting your own stop
   const eta = track.serviceDate + (st[di].arrivalTime + dev) * 1000;
+  const prevModel = trackModel;
   trackModel = { at: Date.now(), live, eta, left, passed,
     nextName: ni >= 0 ? names.get(st[ni].stopId) : null, nextIn: live && Number.isFinite(s.nextStopTimeOffset) ? s.nextStopTimeOffset : null,
     destName: track.destName || names.get(track.destId) };
+  // Evening first leg: keep the next 545 you can catch, based on this bus's live ETA plus the walk.
+  if (track.leg === "home" && !passed) {
+    try {
+      const ready = eta + WALK_MINUTES * 60000;
+      const b = (await load545s()).find((y) => y.t >= ready);
+      if (b) {
+        const end = await endFor(b.a).catch(() => null);
+        trackModel.next545 = { t: b.t, live: b.live, wait: b.t - ready, end: end ? b.t + end.secs * 1000 : null, endName: end && end.name };
+      } else trackModel.next545 = null;
+      trackModel.has545 = true;
+    } catch { if (prevModel) { trackModel.next545 = prevModel.next545; trackModel.has545 = prevModel.has545; } }   // keep the last answer if this fetch fails
+  }
   if (passed && track.auto) setTimeout(stopTrack, 0);   // the 545 has passed your drop-off: back to the office options
   if (!passed && !trackAlerted && (left <= 2 || eta - now <= 2 * 60000)) {
     trackAlerted = true;
@@ -374,6 +397,13 @@ function renderTrack(cards) {
       <div class="row"><span class="k">Next stop</span><span class="v">${esc(m.nextName || "—")}${m.nextIn != null ? ` <small>${mins(m.nextIn * 1000)}</small>` : ""}</span></div>
       <div class="row"><span class="k">Get off at</span><span class="v">${esc(m.destName)}</span></div>
       <div class="row"><span class="k">Arrive</span><span class="v">${fmt(m.eta)}${tag(m.live)}</span></div>`;
+    if (t.leg === "home" && m.has545) {
+      body += m.next545
+        ? `<div class="row"><span class="k">Next <span class="route r-545 sm">545</span> you can catch</span><span class="v">${fmt(m.next545.t)}${tag(m.next545.live)}</span></div>
+           <div class="row"><span class="k">Wait at Westlake</span><span class="v">${mins(m.next545.wait)}</span></div>
+           ${m.next545.end ? `<div class="row"><span class="k">Arrive ${esc(m.next545.endName.replace(/\s*(Park\s*(&|and)\s*Ride|P&R).*$/i, "") + " P&R")}</span><span class="v">${fmt(m.next545.end)}<span class="tag est">EST</span></span></div>` : ""}`
+        : `<div class="row"><span class="k">Next 545 you can catch</span><span class="v">none found</span></div>`;
+    }
   }
   const soon = m && !m.passed && (m.left <= 2 || m.eta - now <= 2 * 60000);
   cards.innerHTML = `<section class="card best${soon ? " alert" : ""}">${head}${body}
@@ -441,7 +471,7 @@ $("cards").addEventListener("click", (ev) => {
   const o = (tab === "office" ? officeModel : model).options[+b.dataset.i];
   if (!o) return;
   startTrack({ tripId: o.tripId, serviceDate: o.serviceDate, destId: o.destId, destName: o.destName, route: o.route,
-    headsign: o.headsign, board: o.board, boardLive: o.boardLive });
+    headsign: o.headsign, board: o.board, boardLive: o.boardLive, leg: tab });
 });
 
 // ---------- "To office" tab ----------
