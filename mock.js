@@ -50,7 +50,8 @@
       body = ok({ schedule: { stopTimes: [
         { stopId: B, arrivalTime: t0 }, { stopId: "1_mid", arrivalTime: t0 + 240 },
         { stopId: "1_3P", arrivalTime: t0 + (rideMin[id] || 10) * 60 },
-      ] } }, { stops: [{ id: "1_3P", name: "3rd Ave & Pike St" }, { id: "1_mid", name: "Westlake Ave & 7th" }] });
+      ] }, status: { predicted: true, scheduleDeviation: 60, nextStop: "1_mid", nextStopTimeOffset: 90 } },
+      { stops: [{ id: "1_3P", name: "3rd Ave & Pike St" }, { id: "1_mid", name: "Westlake Ave & 7th" }] });
     } else if (p.startsWith("trip-details/n")) {
       const id = p.split("/")[1];
       const from = id === "n1" || id === "n2" ? "1_590" : "1_575";

@@ -72,6 +72,13 @@
     color: var(--muted); font: inherit; font-weight: 700; cursor: pointer;
   }
   nav.tabs button.on { border-color: var(--accent); color: var(--text); }
+  button.track {
+    margin: 10px 8px 0 0; padding: 10px 14px; border-radius: 12px; border: 2px solid var(--accent);
+    background: none; color: var(--accent); font: inherit; font-weight: 700; font-size: .95rem; cursor: pointer;
+  }
+  button.track.stop { border-color: var(--muted); color: var(--muted); }
+  .card.alert { border-color: var(--warn); background: var(--warn-bg); animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .75; } }
   .empty { text-align: center; color: var(--muted); padding: 32px 8px; }
   footer { color: var(--muted); font-size: .78rem; margin-top: 16px; line-height: 1.5; }
   footer a { color: var(--accent); cursor: pointer; text-decoration: underline; }
@@ -185,6 +192,8 @@ const rideSecs = new Map(); // tripId -> seconds from origin to 3rd & Pike
 let model = null;           // last good result ("To 545" tab)
 let officeModel = null;     // last good result ("To office" tab)
 let tab = "home";           // "home" | "office"
+let track = null;           // the trip you're riding: { tripId, serviceDate, destId, destName, route, headsign, board, boardLive }
+let trackModel = null, trackAlerted = false, wakeLock = null;
 let busy = false, timer = null, backoff = 0, lastError = null, emptyStreak = 0, seen = "";
 let skew = 0;               // server clock minus device clock, so a wrong device clock can't hide buses
 const nowMs = () => Date.now() + skew;
@@ -262,7 +271,7 @@ async function endFor(a) {
   const last = times[times.length - 1];
   if (!from || !last) return null;
   const name = ((td.data.references.stops || []).find((s) => s.id === last.stopId) || {}).name || "last stop";
-  const res = { secs: last.arrivalTime - (from.departureTime ?? from.arrivalTime), name };
+  const res = { secs: last.arrivalTime - (from.departureTime ?? from.arrivalTime), name, stopId: last.stopId };
   endSecs.set(a.tripId, res);
   return res;
 }
@@ -286,6 +295,102 @@ function shuttleRuns(now, table = SHUTTLE_TO_WESTLAKE, accessMin = SHUTTLE_ACCES
     .filter((r) => r.dep >= now + accessMin * 60000 && r.dep <= now + LOOKAHEAD_MINUTES * 60000)
     .slice(0, SHUTTLE_MAX);
 }
+
+// ---------- "I'm on this bus" tracker ----------
+function trackBtns(o, i) {
+  if (!o.tripId || !o.destId) return "";
+  return `<button class="track" type="button" data-track="bus" data-i="${i}">I'm on this bus</button>` +
+    (o.endStopId ? `<button class="track" type="button" data-track="545" data-i="${i}">I'm on the 545</button>` : "");
+}
+
+async function wake(on) {
+  try {
+    if (on && "wakeLock" in navigator && !wakeLock) {
+      wakeLock = await navigator.wakeLock.request("screen");
+      wakeLock.addEventListener("release", () => { wakeLock = null; });
+    } else if (!on && wakeLock) { await wakeLock.release(); wakeLock = null; }
+  } catch { /* not supported or denied: tracking still works while the screen is on */ }
+}
+
+function startTrack(t) {
+  track = t; trackModel = null; trackAlerted = false; backoff = 0; lastError = null;
+  try { localStorage.setItem("track", JSON.stringify(t)); } catch {}
+  wake(true);
+  clearTimeout(timer);
+  render();
+  refresh(true);
+}
+
+function stopTrack() {
+  track = null; trackModel = null;
+  try { localStorage.removeItem("track"); } catch {}
+  wake(false);
+  clearTimeout(timer);
+  render();
+  refresh(true);
+}
+
+async function loadTrack() {
+  const td = await api(`trip-details/${encodeURIComponent(track.tripId)}`, { serviceDate: track.serviceDate });
+  const e = td.data.entry, st = e.schedule.stopTimes || [];
+  const names = new Map((td.data.references.stops || []).map((s) => [s.id, s.name]));
+  const di = st.findIndex((t) => t.stopId === track.destId);
+  if (di < 0) throw new Error("Your stop isn't on this trip.");
+  const s = e.status || {};
+  const live = !!s.predicted && Number.isFinite(s.scheduleDeviation);
+  const dev = live ? s.scheduleDeviation : 0;
+  const now = nowMs();
+  let ni = st.findIndex((t) => t.stopId === s.nextStop);
+  if (ni < 0) {   // no live next stop: fall back to the schedule
+    const sec = (now - track.serviceDate) / 1000 - dev;
+    ni = st.findIndex((t) => t.arrivalTime >= sec);
+  }
+  const passed = ni < 0 || ni > di;
+  const left = passed ? 0 : di - ni + 1;           // stops to go, counting your own stop
+  const eta = track.serviceDate + (st[di].arrivalTime + dev) * 1000;
+  trackModel = { at: Date.now(), live, eta, left, passed,
+    nextName: ni >= 0 ? names.get(st[ni].stopId) : null, nextIn: live && Number.isFinite(s.nextStopTimeOffset) ? s.nextStopTimeOffset : null,
+    destName: track.destName || names.get(track.destId) };
+  if (!passed && !trackAlerted && (left <= 2 || eta - now <= 2 * 60000)) {
+    trackAlerted = true;
+    try { navigator.vibrate && navigator.vibrate([400, 200, 400, 200, 400]); } catch {}
+  }
+}
+
+function renderTrack(cards) {
+  const t = track, m = trackModel, now = nowMs();
+  const head = `<div class="top"><span class="route r-${esc(normRoute(t.route))}">${esc(t.route)}</span><span class="head">${esc(t.headsign)}</span><span class="badge-best">ON BOARD</span></div>`;
+  const stopBtn = `<button class="track stop" type="button" data-stop="1">${m && m.passed ? "Done" : "I got off / stop tracking"}</button>`;
+  let body;
+  if (!m) body = `<div class="big">Locating your bus…</div>`;
+  else if (m.passed) body = `<div class="big">Trip finished</div><div class="row"><span class="k">This bus has passed ${esc(m.destName)}.</span></div>`;
+  else {
+    const soon = m.left <= 2 || m.eta - now <= 2 * 60000;
+    body = `<div class="big">${soon ? "Get ready: " : ""}${m.left} stop${m.left === 1 ? "" : "s"} to go <small>· ${mins(m.eta - now)}</small></div>
+      <div class="row"><span class="k">Next stop</span><span class="v">${esc(m.nextName || "—")}${m.nextIn != null ? ` <small>${mins(m.nextIn * 1000)}</small>` : ""}</span></div>
+      <div class="row"><span class="k">Get off at</span><span class="v">${esc(m.destName)}</span></div>
+      <div class="row"><span class="k">Arrive</span><span class="v">${fmt(m.eta)}${tag(m.live)}</span></div>`;
+  }
+  const soon = m && !m.passed && (m.left <= 2 || m.eta - now <= 2 * 60000);
+  cards.innerHTML = `<section class="card best${soon ? " alert" : ""}">${head}${body}
+    <div class="row"><span class="k">Boarded (fixed)</span><span class="v">${fmt(t.board)}${tag(t.boardLive)}</span></div>
+    ${stopBtn}</section>`;
+}
+
+$("cards").addEventListener("click", (ev) => {
+  if (ev.target.closest("button[data-stop]")) { stopTrack(); return; }
+  const b = ev.target.closest("button[data-track]");
+  if (!b) return;
+  const o = (tab === "office" ? officeModel : model).options[+b.dataset.i];
+  if (!o) return;
+  if (b.dataset.track === "545") {
+    startTrack({ tripId: o.busA.tripId, serviceDate: o.busA.serviceDate, destId: o.endStopId, destName: o.endName, route: "545",
+      headsign: o.busA.tripHeadsign, board: o.bus, boardLive: o.busLive });
+  } else {
+    startTrack({ tripId: o.tripId, serviceDate: o.serviceDate, destId: o.destId, destName: o.destName, route: o.route,
+      headsign: o.headsign, board: o.board, boardLive: o.boardLive });
+  }
+});
 
 // ---------- "To office" tab ----------
 const officeRide = new Map();   // "tripId|fromStop" -> seconds on the bus
@@ -320,6 +425,7 @@ async function loadOffice() {
     if (secs == null) return;
     const arr = x.t + secs * 1000;
     options.push({ route: x.a.routeShortName, headsign: x.a.tripHeadsign, board: x.t, boardLive: x.live, boardAt: x.stopName,
+      tripId: x.a.tripId, serviceDate: x.a.serviceDate, destId: OFFICE_STOP, destName: "Elliott Ave W & W Prospect St",
       arr, arrLabel: "Get off at Elliott &amp; Prospect", office: arr + BUS_TO_OFFICE_WALK_MIN * 60000 });
   });
   for (const r of shuttleRuns(now, SHUTTLE_TO_CAMPUS, WALK_545_TO_SHUTTLE_MIN)) {
@@ -340,6 +446,7 @@ async function refresh(manual) {
   busy = true;
   $("refreshBtn").disabled = true;
   try {
+    if (track) { await loadTrack(); lastError = null; backoff = 0; return; }
     if (tab === "office") { await loadOffice(); lastError = null; backoff = 0; return; }
     if (!origin) await resolveOrigin(false);
     const all = await getArrivals(origin.id, 60);
@@ -369,7 +476,8 @@ async function refresh(manual) {
     const options = arr.map((x, i) => {
       const r = rides[i];
       const ride = r.status === "fulfilled" ? r.value : null;
-      const o = { route: x.a.routeShortName, headsign: x.a.tripHeadsign, board: x.t, boardLive: x.live, ride };
+      const o = { route: x.a.routeShortName, headsign: x.a.tripHeadsign, board: x.t, boardLive: x.live, ride,
+        tripId: x.a.tripId, serviceDate: x.a.serviceDate, destId: ride != null ? transferStopId : null, destName: TRANSFER_STOP_NAME };
       if (ride != null) {
         o.via = x.t + ride * 1000; o.viaLabel = "Arrive 3rd &amp; Pike";
         const ready = o.via + WALK_MINUTES * 60000;
@@ -398,7 +506,7 @@ async function refresh(manual) {
     (await Promise.allSettled(uniq.map(async (a) => [a.tripId, await endFor(a)]))).forEach((r) => { if (r.status === "fulfilled" && r.value[1]) ends.set(...r.value); });
     options.forEach((o) => {
       const e = o.busA && ends.get(o.busA.tripId);
-      if (e) { o.end = o.bus + e.secs * 1000; o.endName = e.name; }
+      if (e) { o.end = o.bus + e.secs * 1000; o.endName = e.name; o.endStopId = e.stopId; }
     });
     if (options.length && options[0].bus) options[0].best = true;
 
@@ -418,7 +526,9 @@ async function refresh(manual) {
 
 function schedule() {
   clearTimeout(timer);
-  timer = setTimeout(refresh, (backoff || REFRESH_SECONDS) * 1000);
+  // While riding: every 60s, every 30s in the last 5 minutes.
+  const trackEvery = trackModel && !trackModel.passed && trackModel.eta - nowMs() <= 5 * 60000 ? 30 : 60;
+  timer = setTimeout(refresh, (backoff || (track ? trackEvery : REFRESH_SECONDS)) * 1000);
 }
 
 // ---------- rendering ----------
@@ -438,13 +548,15 @@ function render() {
   $("banners").innerHTML = banners.join("");
 
   document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
+  $("tabs").style.display = track ? "none" : "";
   const cards = $("cards");
-  if (tab === "office") renderOffice(cards);
+  if (track) renderTrack(cards);
+  else if (tab === "office") renderOffice(cards);
   else if (!model) { cards.innerHTML = lastError ? "" : `<div class="empty">Loading…</div>`; }
   else if (model.noBuses) cards.innerHTML = `<div class="empty">No upcoming 24 / 33 / D Line buses or EG shuttles in the next ${LOOKAHEAD_MINUTES} minutes.<br><small>${esc(model.seen)}. Retrying; the stop will be re-detected if this keeps happening.</small></div>`;
   else {
     const now = nowMs();
-    cards.innerHTML = model.options.map((o) => {
+    cards.innerHTML = model.options.map((o, i) => {
       const rows = [];
       if (o.ride == null) rows.push(`<div class="row"><span class="k">Ride time</span><span class="v">unavailable</span></div>`);
       else {
@@ -459,13 +571,14 @@ function render() {
         <div class="top"><span class="route r-${esc(normRoute(o.route))}">${esc(o.route)}</span><span class="head">${esc(o.headsign)}</span>${o.best ? `<span class="badge-best">EARLIEST 545</span>` : ""}</div>
         <div class="big">${mins(o.board - now)} <small>· ${fmt(o.board)}${tag(o.boardLive)}</small></div>
         ${rows.join("")}
+        ${trackBtns(o, i)}
       </section>`;
     }).join("") + (model.no545 ? `<div class="banner warn">No 545 departures found at Westlake in the next 2 hours.</div>` : "");
   }
 
-  const cur = tab === "office" ? officeModel : model;
+  const cur = track ? trackModel : tab === "office" ? officeModel : model;
   $("updated").textContent = cur ? "Updated " + new Date(cur.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" }) : "";
-  $("foot").innerHTML = tab === "office" ? officeFoot() : `Boarding stop: ${origin ? esc(origin.id + " · " + origin.name + " (" + origin.direction + ")") : "…"}
+  $("foot").innerHTML = track ? trackFoot() : tab === "office" ? officeFoot() : `Boarding stop: ${origin ? esc(origin.id + " · " + origin.name + " (" + origin.direction + ")") : "…"}
     · <a id="redetect">re-detect stop</a><br>
     Board and 545 times are <b>LIVE</b> when the bus reports a position, else <b>SCHED</b>. Ride time is scheduled, so "arrive" is an estimate.
     Shuttle times come from the published EG schedule (Mon–Fri), not live data.
@@ -481,13 +594,19 @@ function renderOffice(cards) {
     return;
   }
   const now = nowMs();
-  cards.innerHTML = officeModel.options.map((o) => `<section class="card${o.best ? " best" : ""}">
+  cards.innerHTML = officeModel.options.map((o, i) => `<section class="card${o.best ? " best" : ""}">
     <div class="top"><span class="route r-${esc(normRoute(o.route))}">${esc(o.route)}</span><span class="head">${esc(o.headsign)}</span>${o.best ? `<span class="badge-best">EARLIEST ARRIVAL</span>` : ""}</div>
     <div class="big">${mins(o.board - now)} <small>· ${fmt(o.board)}${tag(o.boardLive)}</small></div>
     <div class="row"><span class="k">Board at</span><span class="v">${esc(o.boardAt)}</span></div>
     <div class="row"><span class="k">${o.arrLabel}</span><span class="v">${fmt(o.arr)}${o.sched ? tag(false) : `<span class="tag est">EST</span>`}</span></div>
     <div class="row"><span class="k">At your desk</span><span class="v">${fmt(o.office)}<span class="tag est">EST</span></span></div>
+    ${trackBtns(o, i)}
   </section>`).join("");
+}
+
+function trackFoot() {
+  return `Tracking updates every minute (every 30s in the last 5 minutes) and keeps the screen awake while this page is open.
+    Next stop and stops-to-go use the bus's live position; if it isn't reporting, they follow the schedule (SCHED). You'll get a buzz and a flashing card at 2 stops or 2 minutes out.`;
 }
 
 function officeFoot() {
@@ -505,12 +624,15 @@ function setTab(t) {
 document.querySelectorAll("#tabs button").forEach((b) => { b.onclick = () => setTab(b.dataset.tab); });
 
 $("refreshBtn").onclick = () => { clearTimeout(timer); refresh(true); };
-setInterval(() => { if (model || officeModel) render(); }, 10000);  // keep "min away" ticking between fetches
+setInterval(() => { if (model || officeModel || trackModel) render(); }, 10000);  // keep "min away" ticking between fetches
 document.addEventListener("visibilitychange", () => {
-  const cur = tab === "office" ? officeModel : model;
+  const cur = track ? trackModel : tab === "office" ? officeModel : model;
   if (document.hidden) clearTimeout(timer);
-  else if (!cur || Date.now() - cur.at > REFRESH_SECONDS * 1000) refresh();
-  else schedule();
+  else {
+    if (track) wake(true);   // the screen lock is released when the page is hidden
+    if (!cur || Date.now() - cur.at > (track ? 30 : REFRESH_SECONDS) * 1000) refresh();
+    else schedule();
+  }
 });
 
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
@@ -520,6 +642,10 @@ if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catc
     await new Promise((res, rej) => { const s = document.createElement("script"); s.src = "mock.js"; s.onload = res; s.onerror = rej; document.head.appendChild(s); });
   }
   tab = seattleClock(Date.now()).sec < 12 * 3600 ? "office" : "home";   // mornings open on "To office"
+  try {   // resume a ride in progress (e.g. after a reload) if it started within the last 3 hours
+    const t = JSON.parse(localStorage.getItem("track"));
+    if (t && t.tripId && Date.now() - t.board < 3 * 3600 * 1000) { track = t; wake(true); } else localStorage.removeItem("track");
+  } catch {}
   render();
   refresh();
 })();
