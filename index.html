@@ -92,7 +92,8 @@ const WESTLAKE_STOP = "1_700";                // 4th Ave & Pike St
 const WESTLAKE_ROUTE = "545";
 const WALK_MINUTES = 3;
 const REFRESH_SECONDS = 30;
-const WINDOW_MINUTES = 30;                    // only show buses and shuttles leaving within this many minutes
+const TOP_N = 3;                              // show only the best N options (ranked by which 545 you catch)
+const LOOKAHEAD_MINUTES = 45;                 // how far ahead to consider buses and shuttles when ranking
 // EG shuttle, campus -> Westlake (1620 4th Ave), Mon-Fri, walk-on. [depart campus, arrive Westlake], 24h Seattle time.
 // Source: "2026 Shuttle Schedules_Downtown" (effective Jun 23, 2025). Confirm in TripShot if it changes.
 const SHUTTLE_ENABLED = true;
@@ -103,8 +104,8 @@ const SHUTTLE_TO_WESTLAKE = [
 ];
 const SHUTTLE_ACCESS_MINUTES = 5;   // time you need to reach the campus shuttle stop (hides shuttles you can't make)
 const SHUTTLE_WALK_MINUTES = 3;     // walk from the Westlake shuttle stop to the 545 stop
-const SHUTTLE_MAX = 3;              // safety cap on shuttles shown within the window
-const MAX_TRIPS = 6;                         // safety cap on origin buses shown within the window
+const SHUTTLE_MAX = 4;              // how many upcoming shuttles to consider
+const MAX_TRIPS = 8;                         // how many upcoming buses to consider
 const NEARBY_RADIUS_M = 150;                  // search radius for the opposite-direction pole
 // ======================
 
@@ -255,7 +256,7 @@ function shuttleRuns(now) {
   const toSec = (s) => +s.slice(0, 2) * 3600 + +s.slice(3) * 60;
   return SHUTTLE_TO_WESTLAKE
     .map(([d, a]) => ({ dep: now + (toSec(d) - sec) * 1000, arr: now + (toSec(a) - sec) * 1000 }))
-    .filter((r) => r.dep >= now + SHUTTLE_ACCESS_MINUTES * 60000 && r.dep <= now + WINDOW_MINUTES * 60000)
+    .filter((r) => r.dep >= now + SHUTTLE_ACCESS_MINUTES * 60000 && r.dep <= now + LOOKAHEAD_MINUTES * 60000)
     .slice(0, SHUTTLE_MAX);
 }
 
@@ -272,7 +273,7 @@ async function refresh(manual) {
     const now = nowMs();
     const arr = all.filter(routeOk)
       .map((a) => ({ a, ...live(a, "predictedArrivalTime", "scheduledArrivalTime") }))
-      .filter((x) => x.t >= now - 30000 && x.t <= now + WINDOW_MINUTES * 60000)
+      .filter((x) => x.t >= now - 30000 && x.t <= now + LOOKAHEAD_MINUTES * 60000)
       .sort((x, y) => x.t - y.t).slice(0, MAX_TRIPS);
     seen = `${all.length} arrivals at ${origin.id}` + (all.length ? ` (${[...new Set(all.map((a) => a.routeShortName))].join(", ")})` : "");
     console.log("[refresh]", seen, "| matching:", arr.length);
@@ -312,7 +313,12 @@ async function refresh(manual) {
       if (b) { o.bus = b.t; o.busLive = b.live; o.wait = b.t - ready; o.busA = b.a; }
       options.push(o);
     }
-    options.sort((p, q) => p.board - q.board);
+    // Rank: earliest 545 first; for the same 545, the option that lets you leave later; options with no 545 last.
+    options.sort((p, q) => (p.bus ?? Infinity) - (q.bus ?? Infinity) || q.board - p.board);
+    // One card per distinct 545 (the first, i.e. latest-leaving, option for it), so the list shows real choices.
+    const seen545 = new Set();
+    const picked = options.filter((o) => { const k = o.busA ? o.busA.tripId : null; if (k && seen545.has(k)) return false; if (k) seen545.add(k); return true; });
+    options.splice(0, options.length, ...picked.slice(0, TOP_N));
     // Estimated arrival at the 545's last stop (Bear Creek P&R): live departure + scheduled run time.
     const uniq = [...new Map(options.filter((o) => o.busA).map((o) => [o.busA.tripId, o.busA])).values()];
     const ends = new Map();
@@ -321,8 +327,7 @@ async function refresh(manual) {
       const e = o.busA && ends.get(o.busA.tripId);
       if (e) { o.end = o.bus + e.secs * 1000; o.endName = e.name; }
     });
-    const withBus = options.filter((o) => o.bus);
-    if (withBus.length) withBus.reduce((m, o) => (o.bus < m.bus || (o.bus === m.bus && o.via < m.via) ? o : m)).best = true;
+    if (options.length && options[0].bus) options[0].best = true;
 
     model = { options, seen, at: Date.now(), noBuses: !options.length, no545: options.length && !buses545.length };
     lastError = null; backoff = 0;
@@ -361,7 +366,7 @@ function render() {
 
   const cards = $("cards");
   if (!model) { cards.innerHTML = lastError ? "" : `<div class="empty">Loading…</div>`; }
-  else if (model.noBuses) cards.innerHTML = `<div class="empty">No upcoming 24 / 33 / D Line buses or EG shuttles in the next ${WINDOW_MINUTES} minutes.<br><small>${esc(model.seen)}. Retrying; the stop will be re-detected if this keeps happening.</small></div>`;
+  else if (model.noBuses) cards.innerHTML = `<div class="empty">No upcoming 24 / 33 / D Line buses or EG shuttles in the next ${LOOKAHEAD_MINUTES} minutes.<br><small>${esc(model.seen)}. Retrying; the stop will be re-detected if this keeps happening.</small></div>`;
   else {
     const now = nowMs();
     cards.innerHTML = model.options.map((o) => {
