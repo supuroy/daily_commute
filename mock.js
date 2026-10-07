@@ -25,10 +25,12 @@
     "1_81755": [arr("545", "Redmond", "1_81755", "o0", min(0), true),   // outbound bus ending here: must NOT be offered
       arr("545", "Downtown Seattle", "1_81755", "i0", min(-1), true), arr("545", "Downtown Seattle", "1_81755", "i1", min(14), false)],
     // Northbound 3rd Ave stops for the "To office" tab
-    "1_590": [arr("24", "West Magnolia", "1_590", "n1", min(5), true), arr("33", "E Magnolia", "1_590", "n2", min(12), false)],
-    "1_575": [arr("D Line", "Ballard Uptown", "1_575", "n3", min(8), true), arr("D Line", "Ballard Uptown", "1_575", "n4", min(15), true)],
+    "1_590": [arr("24", "West Magnolia", "1_590", "n1", min(5), true), arr("33", "E Magnolia", "1_590", "n2", min(12), false),
+      arr("24", "West Magnolia", "1_590", "n5", min(41), false), arr("33", "E Magnolia", "1_590", "n6", min(52), false)],
+    "1_575": [arr("D Line", "Ballard Uptown", "1_575", "n3", min(8), true), arr("D Line", "Ballard Uptown", "1_575", "n4", min(15), true),
+      arr("D Line", "Ballard Uptown", "1_575", "n7", min(44), false)],
   };
-  const nRide = { n1: 11, n2: 10, n3: 14, n4: 14 };   // minutes from the 3rd Ave stop to Elliott & Prospect
+  const nRide = { n1: 11, n2: 10, n3: 14, n4: 14, n5: 11, n6: 10, n7: 14 };   // minutes from the 3rd Ave stop to Elliott & Prospect
   const rideMin = { t1: 14, t2: 10, t3: 12, t4: 10 };
   const westlake = [4, 12, 20, 33, 45].map((m, i) => arr("545", "Redmond", "1_700", "w" + i, min(m + 12), i % 2 === 0));
   westlake.push(arr("550", "Bellevue", "1_700", "x1", min(9), true));
@@ -65,7 +67,7 @@
       { stops: [{ id: "1_x1", name: "Stewart St & 9th Ave" }, { id: "1_760", name: "5th Ave & Pine St" }] });
     } else if (p.startsWith("trip-details/n")) {
       const id = p.split("/")[1];
-      const from = id === "n1" || id === "n2" ? "1_590" : "1_575";
+      const from = ["n1", "n2", "n5", "n6"].includes(id) ? "1_590" : "1_575";
       body = ok({ schedule: { stopTimes: [
         { stopId: from, arrivalTime: 1000 }, { stopId: "1_mid2", arrivalTime: 1300 }, { stopId: "1_14070", arrivalTime: 1000 + nRide[id] * 60 },
       ] } }, { stops: [] });
