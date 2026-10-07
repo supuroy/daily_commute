@@ -28,3 +28,5 @@ Open `index.html?mock` to run against fake data from `mock.js`. Locally: `python
 - **Stop detection:** `1_14070` is the NW-bound pole. On first load the app looks up nearby stops and picks the one whose 24/33/D arrivals have a "Downtown" headsign. It logs every candidate to the console and caches the choice. Use "re-detect stop" in the footer to redo it.
 - **Times:** boarding and 545 times are LIVE when the API reports a prediction, otherwise SCHED. Ride time is from the schedule, so "Arrive 3rd & Pike" is an estimate.
 - **Rate limits:** ride durations are cached per trip, so steady state is 2 API calls per refresh. On a 429 the app backs off (up to 5 min) and keeps showing the last good data.
+
+- **EG shuttle:** on weekdays the app also lists the next campus-to-Westlake shuttles (from the published schedule, edit `SHUTTLE_TO_WESTLAKE` in `index.html` if it changes) with the 545 you'd catch after walking from the shuttle stop. Test the shuttle cards any time with `?mock&at=16:20`.

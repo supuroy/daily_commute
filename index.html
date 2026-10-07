@@ -55,6 +55,7 @@
   .route.r-24, .route.r-33 { background: #f4a300; color: #1a1a1a; }
   .route.r-D { background: #b5123e; color: #fff; }
   .route.r-545 { background: #1f2f86; color: #fff; }
+  .route.r-Shuttle { background: #0f766e; color: #fff; font-size: 1rem; }
   .route.sm { font-size: .95rem; padding: 1px 8px; min-width: 0; vertical-align: 1px; }
   .head { color: var(--muted); font-size: .9rem; flex: 1; min-width: 0; }
   .badge-best { background: var(--best); color: #fff; font-size: .75rem; font-weight: 700; padding: 3px 8px; border-radius: 8px; }
@@ -91,7 +92,19 @@ const WESTLAKE_STOP = "1_700";                // 4th Ave & Pike St
 const WESTLAKE_ROUTE = "545";
 const WALK_MINUTES = 3;
 const REFRESH_SECONDS = 30;
-const MAX_TRIPS = 4;                          // how many upcoming origin trips to evaluate
+// EG shuttle, campus -> Westlake (1620 4th Ave), Mon-Fri, walk-on. [depart campus, arrive Westlake], 24h Seattle time.
+// Source: "2026 Shuttle Schedules_Downtown" (effective Jun 23, 2025). Confirm in TripShot if it changes.
+const SHUTTLE_ENABLED = true;
+const SHUTTLE_TO_WESTLAKE = [
+  ["14:00", "14:15"], ["14:45", "15:05"], ["15:00", "15:20"], ["15:20", "15:40"], ["15:40", "16:00"], ["15:50", "16:10"],
+  ["15:55", "16:15"], ["16:10", "16:30"], ["16:25", "16:45"], ["16:35", "16:55"], ["16:45", "17:05"], ["16:55", "17:15"],
+  ["17:10", "17:30"], ["17:20", "17:40"], ["17:45", "18:05"], ["17:55", "18:15"], ["18:10", "18:30"], ["18:30", "18:50"],
+];
+const SHUTTLE_ACCESS_MINUTES = 5;   // time you need to reach the campus shuttle stop (hides shuttles you can't make)
+const SHUTTLE_WALK_MINUTES = 3;     // walk from the Westlake shuttle stop to the 545 stop
+const SHUTTLE_MAX = 2;              // how many upcoming shuttles to show
+const SHUTTLE_LOOKAHEAD_MIN = 90;   // only show shuttles leaving within this window
+const MAX_TRIPS = 4;                         // how many upcoming origin trips to evaluate
 const NEARBY_RADIUS_M = 150;                  // search radius for the opposite-direction pole
 // ======================
 
@@ -227,6 +240,25 @@ async function endFor(a) {
   return res;
 }
 
+// Upcoming shuttle runs as epoch ms, using Seattle wall-clock time (works whatever the device time zone is).
+function shuttleRuns(now) {
+  if (!SHUTTLE_ENABLED) return [];
+  const mockAt = location.search.match(/[?&]at=(\d\d):(\d\d)/);   // ?mock&at=16:20 pretends it's 4:20 PM on a weekday
+  let dow, sec;
+  if (mockAt) { dow = "Wed"; sec = (+mockAt[1] * 60 + +mockAt[2]) * 60; }
+  else {
+    const p = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", weekday: "short", hour: "numeric", minute: "numeric", second: "numeric", hourCycle: "h23" })
+      .formatToParts(new Date(now)).map((x) => [x.type, x.value]));
+    dow = p.weekday; sec = +p.hour * 3600 + +p.minute * 60 + +p.second;
+  }
+  if (dow === "Sat" || dow === "Sun") return [];
+  const toSec = (s) => +s.slice(0, 2) * 3600 + +s.slice(3) * 60;
+  return SHUTTLE_TO_WESTLAKE
+    .map(([d, a]) => ({ dep: now + (toSec(d) - sec) * 1000, arr: now + (toSec(a) - sec) * 1000 }))
+    .filter((r) => r.dep >= now + SHUTTLE_ACCESS_MINUTES * 60000 && r.dep <= now + SHUTTLE_LOOKAHEAD_MIN * 60000)
+    .slice(0, SHUTTLE_MAX);
+}
+
 // ---------- main refresh ----------
 const live = (a, pred, sched) => (a.predicted && a[pred] > 0) ? { t: a[pred], live: true } : { t: a[sched], live: false };
 
@@ -264,13 +296,22 @@ async function refresh(manual) {
       const ride = r.status === "fulfilled" ? r.value : null;
       const o = { route: x.a.routeShortName, headsign: x.a.tripHeadsign, board: x.t, boardLive: x.live, ride };
       if (ride != null) {
-        o.arrive3rd = x.t + ride * 1000;
-        const ready = o.arrive3rd + WALK_MINUTES * 60000;
+        o.via = x.t + ride * 1000; o.viaLabel = "Arrive 3rd &amp; Pike";
+        const ready = o.via + WALK_MINUTES * 60000;
         const b = buses545.find((y) => y.t >= ready);
         if (b) { o.bus = b.t; o.busLive = b.live; o.wait = b.t - ready; o.busA = b.a; }
       }
       return o;
     });
+    for (const r of shuttleRuns(now)) {
+      const o = { route: "Shuttle", headsign: "EG shuttle: campus to Westlake", board: r.dep, boardLive: false, ride: 0,
+        via: r.arr, viaLabel: "Arrive Westlake", viaSched: true };
+      const ready = r.arr + SHUTTLE_WALK_MINUTES * 60000;
+      const b = buses545.find((y) => y.t >= ready);
+      if (b) { o.bus = b.t; o.busLive = b.live; o.wait = b.t - ready; o.busA = b.a; }
+      options.push(o);
+    }
+    options.sort((p, q) => p.board - q.board);
     // Estimated arrival at the 545's last stop (Bear Creek P&R): live departure + scheduled run time.
     const uniq = [...new Map(options.filter((o) => o.busA).map((o) => [o.busA.tripId, o.busA])).values()];
     const ends = new Map();
@@ -280,9 +321,9 @@ async function refresh(manual) {
       if (e) { o.end = o.bus + e.secs * 1000; o.endName = e.name; }
     });
     const withBus = options.filter((o) => o.bus);
-    if (withBus.length) withBus.reduce((m, o) => (o.bus < m.bus || (o.bus === m.bus && o.arrive3rd < m.arrive3rd) ? o : m)).best = true;
+    if (withBus.length) withBus.reduce((m, o) => (o.bus < m.bus || (o.bus === m.bus && o.via < m.via) ? o : m)).best = true;
 
-    model = { options, seen, at: Date.now(), noBuses: !arr.length, no545: arr.length && !buses545.length };
+    model = { options, seen, at: Date.now(), noBuses: !options.length, no545: options.length && !buses545.length };
     lastError = null; backoff = 0;
   } catch (e) {
     console.error(e);
@@ -319,14 +360,14 @@ function render() {
 
   const cards = $("cards");
   if (!model) { cards.innerHTML = lastError ? "" : `<div class="empty">Loading…</div>`; }
-  else if (model.noBuses) cards.innerHTML = `<div class="empty">No upcoming 24 / 33 / D Line buses in the next hour.<br><small>${esc(model.seen)}. Retrying; the stop will be re-detected if this keeps happening.</small></div>`;
+  else if (model.noBuses) cards.innerHTML = `<div class="empty">No upcoming 24 / 33 / D Line buses or EG shuttles in the next hour.<br><small>${esc(model.seen)}. Retrying; the stop will be re-detected if this keeps happening.</small></div>`;
   else {
     const now = nowMs();
     cards.innerHTML = model.options.map((o) => {
       const rows = [];
       if (o.ride == null) rows.push(`<div class="row"><span class="k">Ride time</span><span class="v">unavailable</span></div>`);
       else {
-        rows.push(`<div class="row"><span class="k">Arrive 3rd &amp; Pike</span><span class="v">${fmt(o.arrive3rd)}<span class="tag est">EST</span></span></div>`);
+        rows.push(`<div class="row"><span class="k">${o.viaLabel}</span><span class="v">${fmt(o.via)}${o.viaSched ? tag(false) : `<span class="tag est">EST</span>`}</span></div>`);
         rows.push(o.bus
           ? `<div class="row"><span class="k">Catch <span class="route r-545 sm">545</span> at</span><span class="v">${fmt(o.bus)}${tag(o.busLive)}</span></div>
              <div class="row"><span class="k">Wait at Westlake</span><span class="v">${mins(o.wait)}</span></div>
@@ -345,7 +386,8 @@ function render() {
   $("foot").innerHTML = `Boarding stop: ${origin ? esc(origin.id + " · " + origin.name + " (" + origin.direction + ")") : "…"}
     · <a id="redetect">re-detect stop</a><br>
     Board and 545 times are <b>LIVE</b> when the bus reports a position, else <b>SCHED</b>. Ride time is scheduled, so "arrive" is an estimate.
-    Walk allowance: ${WALK_MINUTES} min. Refreshes every ${REFRESH_SECONDS}s.`;
+    Shuttle times come from the published EG schedule (Mon–Fri), not live data.
+    Walk allowance: ${WALK_MINUTES} min (shuttle: ${SHUTTLE_WALK_MINUTES}). Refreshes every ${REFRESH_SECONDS}s.`;
   const r = $("redetect");
   if (r) r.onclick = () => { origin = null; try { localStorage.removeItem("origin:" + ORIGIN_STOP); } catch {} rideSecs.clear(); transferStopId = null; refresh(true); };
 }
