@@ -127,7 +127,10 @@ const MAX_TRIPS = 8;                         // how many upcoming buses to consi
 const OFFICE_STOP = "1_14070";                // Elliott Ave W & W Prospect St, northbound pole (where the bus drops you)
 const OFFICE_BOARD_24_33 = ["1_590", "3rd Ave & Pine St"];  // northbound 24 / 33
 const OFFICE_BOARD_D = ["1_575", "3rd Ave & Pike St"];      // northbound D Line
-const WALK_545_TO_3RD_MIN = 2;                // walk from the 545 drop-off to the 3rd Ave stops
+const BEAR_CREEK_STOP = "1_81755";            // where you board the 545 in the morning (first stop of the inbound trip)
+const USUAL_545_DEPARTURE = "05:56";          // the Bear Creek departure you aim for (24h Seattle time); only used to label it
+const DROPOFF_545 =["1_760", "5th Ave & Pine St"];   // where the 545 drops you downtown
+const WALK_545_TO_3RD_MIN = 2;               // walk from the 545 drop-off to the 3rd Ave stops
 const WALK_545_TO_SHUTTLE_MIN = 0;            // walk from the 545 drop-off to the Westlake shuttle stop (1620 4th Ave)
 const BUS_TO_OFFICE_WALK_MIN = 6;             // walk from the Elliott/Prospect stop to your desk (guess: edit me)
 const SHUTTLE_TO_OFFICE_WALK_MIN = 2;         // walk from the campus shuttle drop-off to your desk (guess: edit me)
@@ -194,6 +197,7 @@ let officeModel = null;     // last good result ("To office" tab)
 let tab = "home";           // "home" | "office"
 let track = null;           // the trip you're riding: { tripId, serviceDate, destId, destName, route, headsign, board, boardLive }
 let trackModel = null, trackAlerted = false, wakeLock = null;
+let pick = null;            // confirming which 545 departure from Bear Creek you're on: { cands, i }
 let busy = false, timer = null, backoff = 0, lastError = null, emptyStreak = 0, seen = "";
 let skew = 0;               // server clock minus device clock, so a wrong device clock can't hide buses
 const nowMs = () => Date.now() + skew;
@@ -350,6 +354,7 @@ async function loadTrack() {
   trackModel = { at: Date.now(), live, eta, left, passed,
     nextName: ni >= 0 ? names.get(st[ni].stopId) : null, nextIn: live && Number.isFinite(s.nextStopTimeOffset) ? s.nextStopTimeOffset : null,
     destName: track.destName || names.get(track.destId) };
+  if (passed && track.auto) setTimeout(stopTrack, 0);   // the 545 has passed your drop-off: back to the office options
   if (!passed && !trackAlerted && (left <= 2 || eta - now <= 2 * 60000)) {
     trackAlerted = true;
     try { navigator.vibrate && navigator.vibrate([400, 200, 400, 200, 400]); } catch {}
@@ -376,7 +381,60 @@ function renderTrack(cards) {
     ${stopBtn}</section>`;
 }
 
+// Morning 545: find the departure from Bear Creek that's closest to now, let the rider confirm or nudge it, then track it.
+async function begin545() {
+  try {
+    const r = await api(`arrivals-and-departures-for-stop/${BEAR_CREEK_STOP}`, { minutesBefore: 20, minutesAfter: 40 });
+    const now = nowMs();
+    const c = (r.data.entry.arrivalsAndDepartures || []).filter((a) => normRoute(a.routeShortName) === WESTLAKE_ROUTE)
+      .map((a) => ({ a, ...live(a, "predictedDepartureTime", "scheduledDepartureTime") }))
+      .map((x) => (x.t > 0 ? x : { ...x, ...live(x.a, "predictedArrivalTime", "scheduledArrivalTime") }))
+      .sort((x, y) => x.t - y.t);
+    if (!c.length) throw new Error("No 545 departures found at Bear Creek P&R around now.");
+    // Default to the next departure (or one that left in the last 2 minutes); "Earlier"/"Later" nudge from there.
+    let i = c.findIndex((x) => x.t >= now - 2 * 60000);
+    if (i < 0) i = c.length - 1;
+    pick = { cands: c, i };
+    lastError = null;
+  } catch (e) {
+    lastError = e instanceof RateLimitError ? new Error("Rate limited. Try again in a moment.") : e;
+  }
+  render();
+}
+
+const seattleHM = (ms) => new Intl.DateTimeFormat("en-GB", { timeZone: "America/Los_Angeles", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(ms));
+
+function renderPick(cards) {
+  const x = pick.cands[pick.i];
+  cards.innerHTML = `<section class="card best">
+    <div class="top"><span class="route r-545">545</span><span class="head">${esc(x.a.tripHeadsign)}</span></div>
+    <div class="big">${x.t > nowMs() ? "Leaves" : "Left"} Bear Creek P&amp;R ${fmt(x.t)}${tag(x.live)}</div>
+    ${seattleHM(x.a.scheduledDepartureTime || x.t) === USUAL_545_DEPARTURE ? `<div class="row"><span class="k">Your usual ${USUAL_545_DEPARTURE.replace(/^0/, "")} AM bus</span></div>` : ""}
+    <div class="row"><span class="k">Is this the bus you're on?</span></div>
+    <button class="track" type="button" data-pick="yes">Yes, track it</button>
+    <button class="track stop" type="button" data-pick="prev"${pick.i === 0 ? " disabled" : ""}>◀ Earlier</button>
+    <button class="track stop" type="button" data-pick="next"${pick.i === pick.cands.length - 1 ? " disabled" : ""}>Later ▶</button>
+    <button class="track stop" type="button" data-pick="cancel">Cancel</button></section>`;
+}
+
 $("cards").addEventListener("click", (ev) => {
+  if (ev.target.closest("button[data-ride545]")) { begin545(); return; }
+  const pk = ev.target.closest("button[data-pick]");
+  if (pk && pick) {
+    const d = pk.dataset.pick;
+    if (d === "prev") pick.i = Math.max(0, pick.i - 1);
+    else if (d === "next") pick.i = Math.min(pick.cands.length - 1, pick.i + 1);
+    else if (d === "cancel") pick = null;
+    else if (d === "yes") {
+      const x = pick.cands[pick.i];
+      pick = null;
+      startTrack({ tripId: x.a.tripId, serviceDate: x.a.serviceDate, destId: DROPOFF_545[0], destName: DROPOFF_545[1], route: "545",
+        headsign: x.a.tripHeadsign, board: x.t, boardLive: x.live, auto: true });
+      return;
+    }
+    render();
+    return;
+  }
   if (ev.target.closest("button[data-stop]")) { stopTrack(); return; }
   const b = ev.target.closest("button[data-track]");
   if (!b) return;
@@ -582,13 +640,15 @@ function render() {
 }
 
 function renderOffice(cards) {
-  if (!officeModel) { cards.innerHTML = lastError ? "" : `<div class="empty">Loading…</div>`; return; }
+  if (pick) { renderPick(cards); return; }
+  const ride545 = `<button class="track" type="button" data-ride545="1">I'm on the 545</button>`;
+  if (!officeModel) { cards.innerHTML = ride545 + (lastError ? "" : `<div class="empty">Loading…</div>`); return; }
   if (!officeModel.options.length) {
-    cards.innerHTML = `<div class="empty">No 24 / 33 / D Line buses or EG shuttles in the next ${LOOKAHEAD_MINUTES} minutes.</div>`;
+    cards.innerHTML = ride545 + `<div class="empty">No 24 / 33 / D Line buses or EG shuttles in the next ${LOOKAHEAD_MINUTES} minutes.</div>`;
     return;
   }
   const now = nowMs();
-  cards.innerHTML = officeModel.options.map((o, i) => `<section class="card${o.best ? " best" : ""}">
+  cards.innerHTML = ride545 + officeModel.options.map((o, i) => `<section class="card${o.best ? " best" : ""}">
     <div class="top"><span class="route r-${esc(normRoute(o.route))}">${esc(o.route)}</span><span class="head">${esc(o.headsign)}</span>${o.best ? `<span class="badge-best">EARLIEST ARRIVAL</span>` : ""}</div>
     <div class="big">${mins(o.board - now)} <small>· ${fmt(o.board)}${tag(o.boardLive)}</small></div>
     <div class="row"><span class="k">Board at</span><span class="v">${esc(o.boardAt)}</span></div>
@@ -618,7 +678,10 @@ function setTab(t) {
 document.querySelectorAll("#tabs button").forEach((b) => { b.onclick = () => setTab(b.dataset.tab); });
 
 $("refreshBtn").onclick = () => { clearTimeout(timer); refresh(true); };
-setInterval(() => { if (model || officeModel || trackModel) render(); }, 10000);  // keep "min away" ticking between fetches
+let pressing = false;   // don't swap the DOM out from under a tap in progress
+["pointerdown"].forEach((n) => document.addEventListener(n, () => { pressing = true; }));
+["pointerup", "pointercancel"].forEach((n) => document.addEventListener(n, () => { pressing = false; }));
+setInterval(() => { if (!pressing && (model || officeModel || trackModel)) render(); }, 10000);  // keep "min away" ticking between fetches
 document.addEventListener("visibilitychange", () => {
   const cur = track ? trackModel : tab === "office" ? officeModel : model;
   if (document.hidden) clearTimeout(timer);
