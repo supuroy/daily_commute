@@ -22,7 +22,8 @@
       arr("D Line", "Downtown Seattle", B, "t4", min(14), false),
     ],
     // Inbound 545 departures from Bear Creek P&R (morning "I'm on the 545" picker)
-    "1_81755": [arr("545", "Downtown Seattle", "1_81755", "i0", min(-1), true), arr("545", "Downtown Seattle", "1_81755", "i1", min(14), false)],
+    "1_81755": [arr("545", "Redmond", "1_81755", "o0", min(0), true),   // outbound bus ending here: must NOT be offered
+      arr("545", "Downtown Seattle", "1_81755", "i0", min(-1), true), arr("545", "Downtown Seattle", "1_81755", "i1", min(14), false)],
     // Northbound 3rd Ave stops for the "To office" tab
     "1_590": [arr("24", "West Magnolia", "1_590", "n1", min(5), true), arr("33", "E Magnolia", "1_590", "n2", min(12), false)],
     "1_575": [arr("D Line", "Ballard Uptown", "1_575", "n3", min(8), true), arr("D Line", "Ballard Uptown", "1_575", "n4", min(15), true)],

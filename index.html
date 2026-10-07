@@ -416,11 +416,14 @@ async function begin545() {
   try {
     const r = await api(`arrivals-and-departures-for-stop/${BEAR_CREEK_STOP}`, { minutesBefore: 20, minutesAfter: 40 });
     const now = nowMs();
-    const c = (r.data.entry.arrivalsAndDepartures || []).filter((a) => normRoute(a.routeShortName) === WESTLAKE_ROUTE)
+    // Bear Creek is both the start of the inbound trips and the end of the outbound ones, so keep only buses that
+    // leave from here toward downtown (outbound trips have a "Redmond" headsign and can't be boarded here).
+    const c = (r.data.entry.arrivalsAndDepartures || [])
+      .filter((a) => normRoute(a.routeShortName) === WESTLAKE_ROUTE && a.departureEnabled !== false && DOWNTOWN_RE.test(a.tripHeadsign))
       .map((a) => ({ a, ...live(a, "predictedDepartureTime", "scheduledDepartureTime") }))
       .map((x) => (x.t > 0 ? x : { ...x, ...live(x.a, "predictedArrivalTime", "scheduledArrivalTime") }))
       .sort((x, y) => x.t - y.t);
-    if (!c.length) throw new Error("No 545 departures found at Bear Creek P&R around now.");
+    if (!c.length) throw new Error("No 545 departures to downtown found at Bear Creek P&R around now.");
     // Default to the next departure (or one that left in the last 2 minutes); "Earlier"/"Later" nudge from there.
     let i = c.findIndex((x) => x.t >= now - 2 * 60000);
     if (i < 0) i = c.length - 1;
