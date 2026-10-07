@@ -66,6 +66,12 @@
   .row .v { font-weight: 700; font-size: 1.15rem; text-align: right; }
   .tag { font-size: .65rem; font-weight: 800; letter-spacing: .04em; padding: 2px 6px; border-radius: 6px; border: 1px solid currentColor; vertical-align: middle; margin-left: 6px; }
   .tag.live { color: var(--live); } .tag.sched { color: var(--sched); } .tag.est { color: var(--muted); }
+  nav.tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+  nav.tabs button {
+    flex: 1; padding: 10px 8px; border-radius: 12px; border: 2px solid var(--line); background: var(--card);
+    color: var(--muted); font: inherit; font-weight: 700; cursor: pointer;
+  }
+  nav.tabs button.on { border-color: var(--accent); color: var(--text); }
   .empty { text-align: center; color: var(--muted); padding: 32px 8px; }
   footer { color: var(--muted); font-size: .78rem; margin-top: 16px; line-height: 1.5; }
   footer a { color: var(--accent); cursor: pointer; text-decoration: underline; }
@@ -77,6 +83,10 @@
     <h1>Bus Commute</h1>
     <div><span id="updated">Loading…</span><button class="refresh" id="refreshBtn" type="button">Refresh</button></div>
   </header>
+  <nav class="tabs" id="tabs">
+    <button type="button" data-tab="home">To 545 (evening)</button>
+    <button type="button" data-tab="office">To office (morning)</button>
+  </nav>
   <div id="banners"></div>
   <div id="cards"></div>
   <footer id="foot"></footer>
@@ -106,7 +116,21 @@ const SHUTTLE_ACCESS_MINUTES = 5;   // time you need to reach the campus shuttle
 const SHUTTLE_WALK_MINUTES = 3;     // walk from the Westlake shuttle stop to the 545 stop
 const SHUTTLE_MAX = 4;              // how many upcoming shuttles to consider
 const MAX_TRIPS = 8;                         // how many upcoming buses to consider
-const NEARBY_RADIUS_M = 150;                  // search radius for the opposite-direction pole
+// --- "To office" tab: you've just stepped off the 545 at 5th Ave & Pine (1_760) and want the fastest way to work ---
+const OFFICE_STOP = "1_14070";                // Elliott Ave W & W Prospect St, northbound pole (where the bus drops you)
+const OFFICE_BOARD_24_33 = ["1_590", "3rd Ave & Pine St"];  // northbound 24 / 33
+const OFFICE_BOARD_D = ["1_575", "3rd Ave & Pike St"];      // northbound D Line
+const WALK_545_TO_3RD_MIN = 2;                // walk from the 545 drop-off to the 3rd Ave stops
+const WALK_545_TO_SHUTTLE_MIN = 0;            // walk from the 545 drop-off to the Westlake shuttle stop (1620 4th Ave)
+const BUS_TO_OFFICE_WALK_MIN = 6;             // walk from the Elliott/Prospect stop to your desk (guess: edit me)
+const SHUTTLE_TO_OFFICE_WALK_MIN = 2;         // walk from the campus shuttle drop-off to your desk (guess: edit me)
+// EG shuttle, Westlake -> campus, Mon-Fri. [depart Westlake, arrive campus], 24h Seattle time (same PDF as above).
+const SHUTTLE_TO_CAMPUS = [
+  ["06:30", "06:50"], ["06:45", "07:08"], ["07:00", "07:20"], ["07:10", "07:30"], ["07:20", "07:40"], ["07:40", "08:04"],
+  ["07:50", "08:08"], ["08:00", "08:20"], ["08:10", "08:30"], ["08:30", "08:54"], ["08:40", "09:00"], ["08:55", "09:15"],
+  ["09:05", "09:25"], ["09:25", "09:45"], ["09:35", "09:59"], ["09:50", "10:10"], ["10:00", "10:20"],
+];
+const NEARBY_RADIUS_M = 150;                 // search radius for the opposite-direction pole
 // ======================
 
 const BASE = "https://api.pugetsound.onebusaway.org/api/where/";
@@ -158,7 +182,9 @@ async function api(path, params = {}) {
 let origin = null;          // { id, name, direction, confirmed }
 let transferStopId = null;
 const rideSecs = new Map(); // tripId -> seconds from origin to 3rd & Pike
-let model = null;           // last good result
+let model = null;           // last good result ("To 545" tab)
+let officeModel = null;     // last good result ("To office" tab)
+let tab = "home";           // "home" | "office"
 let busy = false, timer = null, backoff = 0, lastError = null, emptyStreak = 0, seen = "";
 let skew = 0;               // server clock minus device clock, so a wrong device clock can't hide buses
 const nowMs = () => Date.now() + skew;
@@ -242,22 +268,68 @@ async function endFor(a) {
 }
 
 // Upcoming shuttle runs as epoch ms, using Seattle wall-clock time (works whatever the device time zone is).
-function shuttleRuns(now) {
-  if (!SHUTTLE_ENABLED) return [];
+function seattleClock(now) {
   const mockAt = location.search.match(/[?&]at=(\d\d):(\d\d)/);   // ?mock&at=16:20 pretends it's 4:20 PM on a weekday
-  let dow, sec;
-  if (mockAt) { dow = "Wed"; sec = (+mockAt[1] * 60 + +mockAt[2]) * 60; }
-  else {
-    const p = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", weekday: "short", hour: "numeric", minute: "numeric", second: "numeric", hourCycle: "h23" })
-      .formatToParts(new Date(now)).map((x) => [x.type, x.value]));
-    dow = p.weekday; sec = +p.hour * 3600 + +p.minute * 60 + +p.second;
-  }
+  if (mockAt) return { dow: "Wed", sec: (+mockAt[1] * 60 + +mockAt[2]) * 60 };
+  const p = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", weekday: "short", hour: "numeric", minute: "numeric", second: "numeric", hourCycle: "h23" })
+    .formatToParts(new Date(now)).map((x) => [x.type, x.value]));
+  return { dow: p.weekday, sec: +p.hour * 3600 + +p.minute * 60 + +p.second };
+}
+
+function shuttleRuns(now, table = SHUTTLE_TO_WESTLAKE, accessMin = SHUTTLE_ACCESS_MINUTES) {
+  if (!SHUTTLE_ENABLED) return [];
+  const { dow, sec } = seattleClock(now);
   if (dow === "Sat" || dow === "Sun") return [];
   const toSec = (s) => +s.slice(0, 2) * 3600 + +s.slice(3) * 60;
-  return SHUTTLE_TO_WESTLAKE
+  return table
     .map(([d, a]) => ({ dep: now + (toSec(d) - sec) * 1000, arr: now + (toSec(a) - sec) * 1000 }))
-    .filter((r) => r.dep >= now + SHUTTLE_ACCESS_MINUTES * 60000 && r.dep <= now + LOOKAHEAD_MINUTES * 60000)
+    .filter((r) => r.dep >= now + accessMin * 60000 && r.dep <= now + LOOKAHEAD_MINUTES * 60000)
     .slice(0, SHUTTLE_MAX);
+}
+
+// ---------- "To office" tab ----------
+const officeRide = new Map();   // "tripId|fromStop" -> seconds on the bus
+async function rideBetween(a, fromStop, toStop) {
+  const k = a.tripId + "|" + fromStop;
+  if (officeRide.has(k)) return officeRide.get(k);
+  const td = await api(`trip-details/${encodeURIComponent(a.tripId)}`, { serviceDate: a.serviceDate });
+  const st = td.data.entry.schedule.stopTimes || [];
+  const i = st.findIndex((t) => t.stopId === fromStop);
+  const j = st.findIndex((t, n) => n > i && t.stopId === toStop);
+  if (i < 0 || j < 0) return null;
+  const secs = st[j].arrivalTime - st[i].arrivalTime;
+  officeRide.set(k, secs);
+  return secs;
+}
+
+async function loadOffice() {
+  const boards = [OFFICE_BOARD_24_33, OFFICE_BOARD_D];
+  const lists = await Promise.all(boards.map(([id]) => getArrivals(id, LOOKAHEAD_MINUTES + WALK_545_TO_3RD_MIN + 2)));
+  const now = nowMs();
+  const cand = [];
+  lists.forEach((l, i) => l.filter(routeOk).forEach((a) => {
+    const t = live(a, "predictedArrivalTime", "scheduledArrivalTime");
+    if (t.t >= now + WALK_545_TO_3RD_MIN * 60000 && t.t <= now + LOOKAHEAD_MINUTES * 60000) cand.push({ a, ...t, stopId: boards[i][0], stopName: boards[i][1] });
+  }));
+  cand.sort((x, y) => x.t - y.t);
+  const top = cand.slice(0, MAX_TRIPS);
+  const rides = await Promise.allSettled(top.map((x) => rideBetween(x.a, x.stopId, OFFICE_STOP)));
+  const options = [];
+  top.forEach((x, i) => {
+    const secs = rides[i].status === "fulfilled" ? rides[i].value : null;
+    if (secs == null) return;
+    const arr = x.t + secs * 1000;
+    options.push({ route: x.a.routeShortName, headsign: x.a.tripHeadsign, board: x.t, boardLive: x.live, boardAt: x.stopName,
+      arr, arrLabel: "Get off at Elliott &amp; Prospect", office: arr + BUS_TO_OFFICE_WALK_MIN * 60000 });
+  });
+  for (const r of shuttleRuns(now, SHUTTLE_TO_CAMPUS, WALK_545_TO_SHUTTLE_MIN)) {
+    options.push({ route: "Shuttle", headsign: "EG shuttle: Westlake to campus", board: r.dep, boardLive: false, boardAt: "1620 4th Ave (Westlake)",
+      arr: r.arr, arrLabel: "Arrive campus", sched: true, office: r.arr + SHUTTLE_TO_OFFICE_WALK_MIN * 60000 });
+  }
+  options.sort((p, q) => p.office - q.office || q.board - p.board);
+  options.splice(TOP_N);
+  if (options.length) options[0].best = true;
+  officeModel = { options, at: Date.now(), none: !cand.length && !options.length };
 }
 
 // ---------- main refresh ----------
@@ -268,6 +340,7 @@ async function refresh(manual) {
   busy = true;
   $("refreshBtn").disabled = true;
   try {
+    if (tab === "office") { await loadOffice(); lastError = null; backoff = 0; return; }
     if (!origin) await resolveOrigin(false);
     const all = await getArrivals(origin.id, 60);
     const now = nowMs();
@@ -361,11 +434,13 @@ function render() {
   } else if (lastError) {
     banners.push(`<div class="banner err">${esc(lastError.message === "Failed to fetch" ? "Network error: check your connection." : lastError.message)}${model ? " Showing last good data." : ""}</div>`);
   }
-  if (origin && !origin.confirmed) banners.push(`<div class="banner warn">No downtown arrivals right now, so the stop direction is unconfirmed.</div>`);
+  if (tab === "home" && origin && !origin.confirmed) banners.push(`<div class="banner warn">No downtown arrivals right now, so the stop direction is unconfirmed.</div>`);
   $("banners").innerHTML = banners.join("");
 
+  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
   const cards = $("cards");
-  if (!model) { cards.innerHTML = lastError ? "" : `<div class="empty">Loading…</div>`; }
+  if (tab === "office") renderOffice(cards);
+  else if (!model) { cards.innerHTML = lastError ? "" : `<div class="empty">Loading…</div>`; }
   else if (model.noBuses) cards.innerHTML = `<div class="empty">No upcoming 24 / 33 / D Line buses or EG shuttles in the next ${LOOKAHEAD_MINUTES} minutes.<br><small>${esc(model.seen)}. Retrying; the stop will be re-detected if this keeps happening.</small></div>`;
   else {
     const now = nowMs();
@@ -388,8 +463,9 @@ function render() {
     }).join("") + (model.no545 ? `<div class="banner warn">No 545 departures found at Westlake in the next 2 hours.</div>` : "");
   }
 
-  $("updated").textContent = model ? "Updated " + new Date(model.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" }) : "";
-  $("foot").innerHTML = `Boarding stop: ${origin ? esc(origin.id + " · " + origin.name + " (" + origin.direction + ")") : "…"}
+  const cur = tab === "office" ? officeModel : model;
+  $("updated").textContent = cur ? "Updated " + new Date(cur.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" }) : "";
+  $("foot").innerHTML = tab === "office" ? officeFoot() : `Boarding stop: ${origin ? esc(origin.id + " · " + origin.name + " (" + origin.direction + ")") : "…"}
     · <a id="redetect">re-detect stop</a><br>
     Board and 545 times are <b>LIVE</b> when the bus reports a position, else <b>SCHED</b>. Ride time is scheduled, so "arrive" is an estimate.
     Shuttle times come from the published EG schedule (Mon–Fri), not live data.
@@ -398,11 +474,42 @@ function render() {
   if (r) r.onclick = () => { origin = null; try { localStorage.removeItem("origin:" + ORIGIN_STOP); } catch {} rideSecs.clear(); transferStopId = null; refresh(true); };
 }
 
+function renderOffice(cards) {
+  if (!officeModel) { cards.innerHTML = lastError ? "" : `<div class="empty">Loading…</div>`; return; }
+  if (!officeModel.options.length) {
+    cards.innerHTML = `<div class="empty">No 24 / 33 / D Line buses or EG shuttles in the next ${LOOKAHEAD_MINUTES} minutes.</div>`;
+    return;
+  }
+  const now = nowMs();
+  cards.innerHTML = officeModel.options.map((o) => `<section class="card${o.best ? " best" : ""}">
+    <div class="top"><span class="route r-${esc(normRoute(o.route))}">${esc(o.route)}</span><span class="head">${esc(o.headsign)}</span>${o.best ? `<span class="badge-best">EARLIEST ARRIVAL</span>` : ""}</div>
+    <div class="big">${mins(o.board - now)} <small>· ${fmt(o.board)}${tag(o.boardLive)}</small></div>
+    <div class="row"><span class="k">Board at</span><span class="v">${esc(o.boardAt)}</span></div>
+    <div class="row"><span class="k">${o.arrLabel}</span><span class="v">${fmt(o.arr)}${o.sched ? tag(false) : `<span class="tag est">EST</span>`}</span></div>
+    <div class="row"><span class="k">At your desk</span><span class="v">${fmt(o.office)}<span class="tag est">EST</span></span></div>
+  </section>`).join("");
+}
+
+function officeFoot() {
+  return `Starts from where the 545 drops you (5th Ave &amp; Pine). Buses board on 3rd Ave (24/33 at Pine, D Line at Pike) and get off at Elliott &amp; Prospect.<br>
+    Walk assumptions: ${WALK_545_TO_3RD_MIN} min to 3rd Ave, ${WALK_545_TO_SHUTTLE_MIN} min to the shuttle, ${BUS_TO_OFFICE_WALK_MIN} min from the bus stop to your desk, ${SHUTTLE_TO_OFFICE_WALK_MIN} min from the shuttle to your desk.
+    Bus ride times are scheduled, shuttle times are the published EG schedule (Mon–Fri). Refreshes every ${REFRESH_SECONDS}s.`;
+}
+
+function setTab(t) {
+  tab = t; backoff = 0; lastError = null;
+  clearTimeout(timer);
+  render();
+  refresh(true);
+}
+document.querySelectorAll("#tabs button").forEach((b) => { b.onclick = () => setTab(b.dataset.tab); });
+
 $("refreshBtn").onclick = () => { clearTimeout(timer); refresh(true); };
-setInterval(() => { if (model) render(); }, 10000);  // keep "min away" ticking between fetches
+setInterval(() => { if (model || officeModel) render(); }, 10000);  // keep "min away" ticking between fetches
 document.addEventListener("visibilitychange", () => {
+  const cur = tab === "office" ? officeModel : model;
   if (document.hidden) clearTimeout(timer);
-  else if (!model || Date.now() - model.at > REFRESH_SECONDS * 1000) refresh();
+  else if (!cur || Date.now() - cur.at > REFRESH_SECONDS * 1000) refresh();
   else schedule();
 });
 
@@ -412,6 +519,7 @@ if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catc
   if (new URLSearchParams(location.search).has("mock")) {
     await new Promise((res, rej) => { const s = document.createElement("script"); s.src = "mock.js"; s.onload = res; s.onerror = rej; document.head.appendChild(s); });
   }
+  tab = seattleClock(Date.now()).sec < 12 * 3600 ? "office" : "home";   // mornings open on "To office"
   render();
   refresh();
 })();

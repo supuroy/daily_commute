@@ -21,7 +21,11 @@
       arr("33", "Downtown Seattle", B, "t3", min(11), false),
       arr("D Line", "Downtown Seattle", B, "t4", min(14), false),
     ],
+    // Northbound 3rd Ave stops for the "To office" tab
+    "1_590": [arr("24", "West Magnolia", "1_590", "n1", min(5), true), arr("33", "E Magnolia", "1_590", "n2", min(12), false)],
+    "1_575": [arr("D Line", "Ballard Uptown", "1_575", "n3", min(8), true), arr("D Line", "Ballard Uptown", "1_575", "n4", min(15), true)],
   };
+  const nRide = { n1: 11, n2: 10, n3: 14, n4: 14 };   // minutes from the 3rd Ave stop to Elliott & Prospect
   const rideMin = { t1: 14, t2: 10, t3: 12, t4: 10 };
   const westlake = [4, 12, 20, 33, 45].map((m, i) => arr("545", "Redmond", "1_700", "w" + i, min(m + 12), i % 2 === 0));
   westlake.push(arr("550", "Bellevue", "1_700", "x1", min(9), true));
@@ -47,6 +51,12 @@
         { stopId: B, arrivalTime: t0 }, { stopId: "1_mid", arrivalTime: t0 + 240 },
         { stopId: "1_3P", arrivalTime: t0 + (rideMin[id] || 10) * 60 },
       ] } }, { stops: [{ id: "1_3P", name: "3rd Ave & Pike St" }, { id: "1_mid", name: "Westlake Ave & 7th" }] });
+    } else if (p.startsWith("trip-details/n")) {
+      const id = p.split("/")[1];
+      const from = id === "n1" || id === "n2" ? "1_590" : "1_575";
+      body = ok({ schedule: { stopTimes: [
+        { stopId: from, arrivalTime: 1000 }, { stopId: "1_mid2", arrivalTime: 1300 }, { stopId: "1_14070", arrivalTime: 1000 + nRide[id] * 60 },
+      ] } }, { stops: [] });
     } else if (p.startsWith("trip-details/w")) {
       body = ok({ schedule: { stopTimes: [
         { stopId: "1_700", arrivalTime: 0, departureTime: 0 }, { stopId: "1_bc", arrivalTime: 2280, departureTime: 2280 },
