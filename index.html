@@ -299,8 +299,7 @@ function shuttleRuns(now, table = SHUTTLE_TO_WESTLAKE, accessMin = SHUTTLE_ACCES
 // ---------- "I'm on this bus" tracker ----------
 function trackBtns(o, i) {
   if (!o.tripId || !o.destId) return "";
-  return `<button class="track" type="button" data-track="bus" data-i="${i}">I'm on this bus</button>` +
-    (o.endStopId ? `<button class="track" type="button" data-track="545" data-i="${i}">I'm on the 545</button>` : "");
+  return `<button class="track" type="button" data-track="bus" data-i="${i}">I'm on this bus</button>`;
 }
 
 async function wake(on) {
@@ -383,13 +382,8 @@ $("cards").addEventListener("click", (ev) => {
   if (!b) return;
   const o = (tab === "office" ? officeModel : model).options[+b.dataset.i];
   if (!o) return;
-  if (b.dataset.track === "545") {
-    startTrack({ tripId: o.busA.tripId, serviceDate: o.busA.serviceDate, destId: o.endStopId, destName: o.endName, route: "545",
-      headsign: o.busA.tripHeadsign, board: o.bus, boardLive: o.busLive });
-  } else {
-    startTrack({ tripId: o.tripId, serviceDate: o.serviceDate, destId: o.destId, destName: o.destName, route: o.route,
-      headsign: o.headsign, board: o.board, boardLive: o.boardLive });
-  }
+  startTrack({ tripId: o.tripId, serviceDate: o.serviceDate, destId: o.destId, destName: o.destName, route: o.route,
+    headsign: o.headsign, board: o.board, boardLive: o.boardLive });
 });
 
 // ---------- "To office" tab ----------
