@@ -92,6 +92,7 @@ const WESTLAKE_STOP = "1_700";                // 4th Ave & Pike St
 const WESTLAKE_ROUTE = "545";
 const WALK_MINUTES = 3;
 const REFRESH_SECONDS = 30;
+const WINDOW_MINUTES = 30;                    // only show buses and shuttles leaving within this many minutes
 // EG shuttle, campus -> Westlake (1620 4th Ave), Mon-Fri, walk-on. [depart campus, arrive Westlake], 24h Seattle time.
 // Source: "2026 Shuttle Schedules_Downtown" (effective Jun 23, 2025). Confirm in TripShot if it changes.
 const SHUTTLE_ENABLED = true;
@@ -102,9 +103,8 @@ const SHUTTLE_TO_WESTLAKE = [
 ];
 const SHUTTLE_ACCESS_MINUTES = 5;   // time you need to reach the campus shuttle stop (hides shuttles you can't make)
 const SHUTTLE_WALK_MINUTES = 3;     // walk from the Westlake shuttle stop to the 545 stop
-const SHUTTLE_MAX = 2;              // how many upcoming shuttles to show
-const SHUTTLE_LOOKAHEAD_MIN = 90;   // only show shuttles leaving within this window
-const MAX_TRIPS = 4;                         // how many upcoming origin trips to evaluate
+const SHUTTLE_MAX = 3;              // safety cap on shuttles shown within the window
+const MAX_TRIPS = 6;                         // safety cap on origin buses shown within the window
 const NEARBY_RADIUS_M = 150;                  // search radius for the opposite-direction pole
 // ======================
 
@@ -255,7 +255,7 @@ function shuttleRuns(now) {
   const toSec = (s) => +s.slice(0, 2) * 3600 + +s.slice(3) * 60;
   return SHUTTLE_TO_WESTLAKE
     .map(([d, a]) => ({ dep: now + (toSec(d) - sec) * 1000, arr: now + (toSec(a) - sec) * 1000 }))
-    .filter((r) => r.dep >= now + SHUTTLE_ACCESS_MINUTES * 60000 && r.dep <= now + SHUTTLE_LOOKAHEAD_MIN * 60000)
+    .filter((r) => r.dep >= now + SHUTTLE_ACCESS_MINUTES * 60000 && r.dep <= now + WINDOW_MINUTES * 60000)
     .slice(0, SHUTTLE_MAX);
 }
 
@@ -272,15 +272,16 @@ async function refresh(manual) {
     const now = nowMs();
     const arr = all.filter(routeOk)
       .map((a) => ({ a, ...live(a, "predictedArrivalTime", "scheduledArrivalTime") }))
-      .filter((x) => x.t >= now - 30000)
+      .filter((x) => x.t >= now - 30000 && x.t <= now + WINDOW_MINUTES * 60000)
       .sort((x, y) => x.t - y.t).slice(0, MAX_TRIPS);
     seen = `${all.length} arrivals at ${origin.id}` + (all.length ? ` (${[...new Set(all.map((a) => a.routeShortName))].join(", ")})` : "");
     console.log("[refresh]", seen, "| matching:", arr.length);
     // Repeated empty results may mean the cached stop is wrong or stale: re-detect it next time.
-    if (!arr.length && ++emptyStreak >= 2) {
+    const anyMatch = all.some(routeOk);
+    if (!anyMatch && ++emptyStreak >= 2) {
       origin = null; emptyStreak = 0;
       try { localStorage.removeItem("origin:" + ORIGIN_STOP); } catch {}
-    } else if (arr.length) emptyStreak = 0;
+    } else if (anyMatch) emptyStreak = 0;
 
     const rides = await Promise.allSettled(arr.map((x) => rideFor(x.a)));
 
@@ -360,7 +361,7 @@ function render() {
 
   const cards = $("cards");
   if (!model) { cards.innerHTML = lastError ? "" : `<div class="empty">Loading…</div>`; }
-  else if (model.noBuses) cards.innerHTML = `<div class="empty">No upcoming 24 / 33 / D Line buses or EG shuttles in the next hour.<br><small>${esc(model.seen)}. Retrying; the stop will be re-detected if this keeps happening.</small></div>`;
+  else if (model.noBuses) cards.innerHTML = `<div class="empty">No upcoming 24 / 33 / D Line buses or EG shuttles in the next ${WINDOW_MINUTES} minutes.<br><small>${esc(model.seen)}. Retrying; the stop will be re-detected if this keeps happening.</small></div>`;
   else {
     const now = nowMs();
     cards.innerHTML = model.options.map((o) => {
