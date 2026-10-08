@@ -486,7 +486,7 @@ $("cards").addEventListener("click", (ev) => {
   const o = (tab === "office" ? officeModel : model).options[+b.dataset.i];
   if (!o) return;
   startTrack({ tripId: o.tripId, serviceDate: o.serviceDate, destId: o.destId, destName: o.destName, route: o.route,
-    headsign: o.headsign, board: o.board, boardLive: o.boardLive, leg: tab });
+    headsign: o.headsign, board: o.board, boardLive: o.boardLive, leg: tab, auto: true });
 });
 
 // ---------- "To office" tab ----------
