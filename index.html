@@ -197,6 +197,7 @@ let officeModel = null;     // last good result ("To office" tab)
 let tab = "home";           // "home" | "office"
 let track = null;           // the trip you're riding: { tripId, serviceDate, destId, destName, route, headsign, board, boardLive }
 let trackModel = null, trackAlerted = false, wakeLock = null;
+let wait545 = null;         // after stepping off the first evening bus: upcoming 545s from Westlake { items, at }
 let pick = null;            // confirming which 545 departure from Bear Creek you're on: { cands, i }
 let busy = false, timer = null, backoff = 0, lastError = null, emptyStreak = 0, seen = "";
 let skew = 0;               // server clock minus device clock, so a wrong device clock can't hide buses
@@ -324,6 +325,37 @@ function startTrack(t) {
   refresh(true);
 }
 
+// Stepping off the first evening bus: keep showing the next 545s from Westlake instead of going blind.
+function enterWait545() {
+  track = null; trackModel = null; wait545 = { items: null, at: Date.now() };
+  try { localStorage.removeItem("track"); } catch {}
+  wake(false);
+  clearTimeout(timer);
+  render();
+  refresh(true);
+}
+
+async function loadWait545() {
+  const now = nowMs();
+  const next = (await load545s()).filter((x) => x.t >= now - 60000).slice(0, 3);
+  const ends = await Promise.allSettled(next.map((x) => endFor(x.a)));
+  wait545 = { at: Date.now(), items: next.map((x, i) => ({ ...x, end: ends[i].status === "fulfilled" ? ends[i].value : null })) };
+}
+
+function renderWait(cards) {
+  const w = wait545, now = nowMs();
+  const back = `<button class="track stop" type="button" data-wait-close="1">Back to buses</button>`;
+  if (!w.items) { cards.innerHTML = (lastError ? "" : `<div class="empty">Finding the next 545…</div>`) + back; return; }
+  if (!w.items.length) { cards.innerHTML = `<div class="empty">No 545 departures found at Westlake in the next 2 hours.</div>` + back; return; }
+  cards.innerHTML = w.items.map((x, i) => `<section class="card${i === 0 ? " best" : ""}">
+    <div class="top"><span class="route r-545">545</span><span class="head">${esc(x.a.tripHeadsign)}</span>${i === 0 ? `<span class="badge-best">NEXT</span>` : ""}</div>
+    <div class="big">${mins(x.t - now)} <small>· ${fmt(x.t)}${tag(x.live)}</small></div>
+    <div class="row"><span class="k">Boards at</span><span class="v">4th Ave &amp; Pike St</span></div>
+    ${x.end ? `<div class="row"><span class="k">Arrive ${esc(x.end.name.replace(/\s*(Park\s*(&|and)\s*Ride|P&R).*$/i, "") + " P&R")}</span><span class="v">${fmt(x.t + x.end.secs * 1000)}<span class="tag est">EST</span></span></div>` : ""}
+    <button class="track" type="button" data-board545="${i}">I'm on this 545</button>
+  </section>`).join("") + back;
+}
+
 function stopTrack() {
   track = null; trackModel = null;
   try { localStorage.removeItem("track"); } catch {}
@@ -384,7 +416,7 @@ async function loadTrack() {
       trackModel.hasNext = true;
     } catch { if (prevModel) { trackModel.next = prevModel.next; trackModel.hasNext = prevModel.hasNext; } }
   }
-  if (passed && track.auto) setTimeout(stopTrack, 0);   // the 545 has passed your drop-off: back to the office options
+  if (passed && (track.auto || track.leg === "545")) setTimeout(stopTrack, 0);   // the 545 has passed your drop-off: back to the office options
   if (!passed && !trackAlerted && (left <= 2 || eta - now <= 2 * 60000)) {
     trackAlerted = true;
     try { navigator.vibrate && navigator.vibrate([400, 200, 400, 200, 400]); } catch {}
@@ -394,7 +426,8 @@ async function loadTrack() {
 function renderTrack(cards) {
   const t = track, m = trackModel, now = nowMs();
   const head = `<div class="top"><span class="route r-${esc(normRoute(t.route))}">${esc(t.route)}</span><span class="head">${esc(t.headsign)}</span><span class="badge-best">ON BOARD</span></div>`;
-  const stopBtn = `<button class="track stop" type="button" data-stop="1">${m && m.passed ? "Done" : "I got off / stop tracking"}</button>`;
+  const toWait = t.leg === "home" && !t.auto;
+  const stopBtn = `<button class="track stop" type="button" data-stop="1">${m && m.passed ? "Done" : toWait ? "I got off · show next 545" : "I got off / stop tracking"}</button>`;
   let body;
   if (!m) body = `<div class="big">Locating your bus…</div>`;
   else if (m.passed) body = `<div class="big">Trip finished</div><div class="row"><span class="k">This bus has passed ${esc(m.destName)}.</span></div>`;
@@ -480,7 +513,17 @@ $("cards").addEventListener("click", (ev) => {
     render();
     return;
   }
-  if (ev.target.closest("button[data-stop]")) { stopTrack(); return; }
+  if (ev.target.closest("button[data-stop]")) { if (track && track.leg === "home" && !track.auto) enterWait545(); else stopTrack(); return; }
+  if (ev.target.closest("button[data-wait-close]")) { wait545 = null; render(); refresh(true); return; }
+  const bd = ev.target.closest("button[data-board545]");
+  if (bd && wait545 && wait545.items) {
+    const x = wait545.items[+bd.dataset.board545];
+    if (!x) return;
+    wait545 = null;
+    startTrack({ tripId: x.a.tripId, serviceDate: x.a.serviceDate, destId: (x.end && x.end.stopId) || BEAR_CREEK_STOP,
+      destName: x.end ? x.end.name : "Bear Creek P&R", route: "545", headsign: x.a.tripHeadsign, board: x.t, boardLive: x.live, leg: "545" });
+    return;
+  }
   const b = ev.target.closest("button[data-track]");
   if (!b) return;
   const o = (tab === "office" ? officeModel : model).options[+b.dataset.i];
@@ -550,6 +593,7 @@ async function refresh(manual) {
   $("refreshBtn").disabled = true;
   try {
     if (track) { await loadTrack(); lastError = null; backoff = 0; return; }
+    if (wait545) { await loadWait545(); lastError = null; backoff = 0; return; }
     if (tab === "office") { await loadOffice(); lastError = null; backoff = 0; return; }
     if (!origin) await resolveOrigin(false);
     let all;
@@ -659,9 +703,10 @@ function render() {
   $("banners").innerHTML = banners.join("");
 
   document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
-  $("tabs").style.display = track ? "none" : "";
+  $("tabs").style.display = track || wait545 ? "none" : "";
   const cards = $("cards");
   if (track) renderTrack(cards);
+  else if (wait545) renderWait(cards);
   else if (tab === "office") renderOffice(cards);
   else if (!model) { cards.innerHTML = lastError ? "" : `<div class="empty">Loading…</div>`; }
   else if (model.noBuses) cards.innerHTML = `<div class="empty">No upcoming 24 / 33 / D Line buses or EG shuttles in the next ${LOOKAHEAD_MINUTES} minutes.<br><small>${esc(model.seen)}. Retrying; the stop will be re-detected if this keeps happening.</small></div>`;
@@ -687,9 +732,9 @@ function render() {
     }).join("") + (model.no545 ? `<div class="banner warn">No 545 departures found at Westlake in the next 2 hours.</div>` : "");
   }
 
-  const cur = track ? trackModel : tab === "office" ? officeModel : model;
+  const cur = track ? trackModel : wait545 ? wait545 : tab === "office" ? officeModel : model;
   $("updated").textContent = cur ? "Updated " + new Date(cur.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" }) : "";
-  $("foot").innerHTML = track ? trackFoot() : tab === "office" ? officeFoot() : `Boarding stop: ${origin ? esc(origin.id + " · " + origin.name + " (" + origin.direction + ")") : "…"}
+  $("foot").innerHTML = track ? trackFoot() : wait545 ? "Upcoming 545s from Westlake (4th Ave &amp; Pike St). Times are LIVE when the bus reports a position, else SCHED. Refreshes every " + REFRESH_SECONDS + "s." : tab === "office" ? officeFoot() : `Boarding stop: ${origin ? esc(origin.id + " · " + origin.name + " (" + origin.direction + ")") : "…"}
     · <a id="redetect">re-detect stop</a><br>
     Board and 545 times are <b>LIVE</b> when the bus reports a position, else <b>SCHED</b>. Ride time is scheduled, so "arrive" is an estimate.
     Shuttle times come from the published EG schedule (Mon–Fri), not live data.
@@ -740,9 +785,9 @@ $("refreshBtn").onclick = () => { clearTimeout(timer); refresh(true); };
 let pressing = false;   // don't swap the DOM out from under a tap in progress
 ["pointerdown"].forEach((n) => document.addEventListener(n, () => { pressing = true; }));
 ["pointerup", "pointercancel"].forEach((n) => document.addEventListener(n, () => { pressing = false; }));
-setInterval(() => { if (!pressing && (model || officeModel || trackModel)) render(); }, 10000);  // keep "min away" ticking between fetches
+setInterval(() => { if (!pressing && (model || officeModel || trackModel || wait545)) render(); }, 10000);  // keep "min away" ticking between fetches
 document.addEventListener("visibilitychange", () => {
-  const cur = track ? trackModel : tab === "office" ? officeModel : model;
+  const cur = track ? trackModel : wait545 ? wait545 : tab === "office" ? officeModel : model;
   if (document.hidden) clearTimeout(timer);
   else {
     if (track) wake(true);   // the screen lock is released when the page is hidden

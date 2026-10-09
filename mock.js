@@ -72,9 +72,13 @@
         { stopId: from, arrivalTime: 1000 }, { stopId: "1_mid2", arrivalTime: 1300 }, { stopId: "1_14070", arrivalTime: 1000 + nRide[id] * 60 },
       ] } }, { stops: [] });
     } else if (p.startsWith("trip-details/w")) {
+      const w = westlake.find((a) => a.tripId === p.split("/")[1]);
+      const t0 = w ? secOf(w.scheduledDepartureTime) : 0;
       body = ok({ schedule: { stopTimes: [
-        { stopId: "1_700", arrivalTime: 0, departureTime: 0 }, { stopId: "1_bc", arrivalTime: 2280, departureTime: 2280 },
-      ] } }, { stops: [{ id: "1_bc", name: "Bear Creek Park & Ride" }] });
+        { stopId: "1_700", arrivalTime: t0, departureTime: t0 }, { stopId: "1_mid545", arrivalTime: t0 + 900, departureTime: t0 + 900 },
+        { stopId: "1_bc", arrivalTime: t0 + 2280, departureTime: t0 + 2280 },
+      ] }, status: { predicted: true, scheduleDeviation: 0, nextStop: "1_mid545", nextStopTimeOffset: 600 } },
+      { stops: [{ id: "1_bc", name: "Bear Creek Park & Ride" }, { id: "1_mid545", name: "Bellevue Transit Center" }] });
     } else body = { code: 404, text: "mock: not found " + p };
     return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
   };
