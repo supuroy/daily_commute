@@ -167,7 +167,21 @@ const TARGET_NAME = normName(TRANSFER_STOP_NAME);
 
 class RateLimitError extends Error {}
 
+// Space request starts out (the API limits bursts as well as total rate): several calls fired together queue up instead.
+const REQUEST_GAP_MS = 350;
+let gate = Promise.resolve(), lastStart = 0;
+function slot() {
+  const p = gate.then(async () => {
+    const wait = lastStart + REQUEST_GAP_MS - Date.now();
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    lastStart = Date.now();
+  });
+  gate = p.catch(() => {});
+  return p;
+}
+
 async function api(path, params = {}) {
+  await slot();
   const url = new URL(BASE + path + ".json");
   url.searchParams.set("key", KEY);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
@@ -744,6 +758,7 @@ function render() {
     Board and 545 times are <b>LIVE</b> when the bus reports a position, else <b>SCHED</b>. Ride time is scheduled, so "arrive" is an estimate.
     Shuttle times come from the published EG schedule (Mon–Fri), not live data.
     Walk allowance: ${WALK_MINUTES} min (shuttle: ${SHUTTLE_WALK_MINUTES}). Refreshes every ${REFRESH_SECONDS}s.`;
+  $("foot").innerHTML += `<br>API key: ${KEY === "TEST" ? "shared test key" : "your own key"}`;
   const r = $("redetect");
   if (r) r.onclick = () => { origin = null; try { localStorage.removeItem("origin:" + ORIGIN_STOP); } catch {} rideSecs.clear(); transferStopId = null; refresh(true); };
 }
