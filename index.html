@@ -551,14 +551,15 @@ async function refresh(manual) {
   try {
     if (track) { await loadTrack(); lastError = null; backoff = 0; return; }
     if (tab === "office") { await loadOffice(); lastError = null; backoff = 0; return; }
-    // For "To Home" (evening) tab: query directly from Elliott Ave, no stop detection needed
-    const all = await getArrivals(ORIGIN_STOP, 60);
+    // For "To Home" (evening) tab: use Elliott Ave directly without origin detection
+    const homeOrigin = { id: ORIGIN_STOP, name: "Elliott Ave W & W Prospect St", direction: "SE", confirmed: true };
+    const all = await getArrivals(homeOrigin.id, 60);
     const now = nowMs();
     const arr = all.filter(routeOk)
       .map((a) => ({ a, ...live(a, "predictedArrivalTime", "scheduledArrivalTime") }))
       .filter((x) => x.t >= now - 30000 && x.t <= now + LOOKAHEAD_MINUTES * 60000)
       .sort((x, y) => x.t - y.t).slice(0, MAX_TRIPS);
-    seen = `${all.length} arrivals at ${origin.id}` + (all.length ? ` (${[...new Set(all.map((a) => a.routeShortName))].join(", ")})` : "");
+    seen = `${all.length} arrivals at ${homeOrigin.id}` + (all.length ? ` (${[...new Set(all.map((a) => a.routeShortName))].join(", ")})` : "");
     console.log("[refresh]", seen, "| matching:", arr.length);
     // Repeated empty results may mean the cached stop is wrong or stale: re-detect it next time.
     const anyMatch = all.some(routeOk);
@@ -567,7 +568,7 @@ async function refresh(manual) {
       try { localStorage.removeItem("origin:" + ORIGIN_STOP); } catch {}
     } else if (anyMatch) emptyStreak = 0;
 
-    const rides = await Promise.allSettled(arr.map((x) => rideFor(x.a)));
+    const rides = await Promise.allSettled(arr.map((x) => rideFor(x.a, homeOrigin.id)));
 
     const wl = (await getArrivals(WESTLAKE_STOP, 120)).filter((a) => normRoute(a.routeShortName) === WESTLAKE_ROUTE);
     const toRedmond = wl.filter((a) => /redmond/i.test(a.tripHeadsign));
