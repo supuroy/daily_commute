@@ -256,10 +256,10 @@ function findTransfer(td, originId) {
   return times[idx].arrivalTime - times[o].arrivalTime;
 }
 
-async function rideFor(a) {
+async function rideFor(a, fromStopId) {
   if (rideSecs.has(a.tripId)) return rideSecs.get(a.tripId);
   const td = await api(`trip-details/${encodeURIComponent(a.tripId)}`, { serviceDate: a.serviceDate });
-  const secs = findTransfer(td, origin.id);
+  const secs = findTransfer(td, fromStopId || origin?.id);
   if (secs == null) return null;
   rideSecs.set(a.tripId, secs);
   return secs;
