@@ -551,15 +551,22 @@ async function refresh(manual) {
   try {
     if (track) { await loadTrack(); lastError = null; backoff = 0; return; }
     if (tab === "office") { await loadOffice(); lastError = null; backoff = 0; return; }
-    // For "To Home" (evening) tab: use Elliott Ave directly without origin detection
-    const homeOrigin = { id: ORIGIN_STOP, name: "Elliott Ave W & W Prospect St", direction: "SE", confirmed: true };
-    const all = await getArrivals(homeOrigin.id, 60);
+    if (!origin) await resolveOrigin(false);
+    let all;
+    try { all = await getArrivals(origin.id, 60); }
+    catch (e) {   // a cached stop id can go stale when the transit feed updates: re-detect once
+      if (!/404/.test(e.message)) throw e;
+      origin = null; rideSecs.clear();
+      try { localStorage.removeItem("origin:" + ORIGIN_STOP); } catch {}
+      await resolveOrigin(true);
+      all = await getArrivals(origin.id, 60);
+    }
     const now = nowMs();
     const arr = all.filter(routeOk)
       .map((a) => ({ a, ...live(a, "predictedArrivalTime", "scheduledArrivalTime") }))
       .filter((x) => x.t >= now - 30000 && x.t <= now + LOOKAHEAD_MINUTES * 60000)
       .sort((x, y) => x.t - y.t).slice(0, MAX_TRIPS);
-    seen = `${all.length} arrivals at ${homeOrigin.id}` + (all.length ? ` (${[...new Set(all.map((a) => a.routeShortName))].join(", ")})` : "");
+    seen = `${all.length} arrivals at ${origin.id}` + (all.length ? ` (${[...new Set(all.map((a) => a.routeShortName))].join(", ")})` : "");
     console.log("[refresh]", seen, "| matching:", arr.length);
     // Repeated empty results may mean the cached stop is wrong or stale: re-detect it next time.
     const anyMatch = all.some(routeOk);
@@ -568,7 +575,7 @@ async function refresh(manual) {
       try { localStorage.removeItem("origin:" + ORIGIN_STOP); } catch {}
     } else if (anyMatch) emptyStreak = 0;
 
-    const rides = await Promise.allSettled(arr.map((x) => rideFor(x.a, homeOrigin.id)));
+    const rides = await Promise.allSettled(arr.map((x) => rideFor(x.a, origin.id)));
 
     const wl = (await getArrivals(WESTLAKE_STOP, 120)).filter((a) => normRoute(a.routeShortName) === WESTLAKE_ROUTE);
     const toRedmond = wl.filter((a) => /redmond/i.test(a.tripHeadsign));
@@ -682,7 +689,7 @@ function render() {
 
   const cur = track ? trackModel : tab === "office" ? officeModel : model;
   $("updated").textContent = cur ? "Updated " + new Date(cur.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" }) : "";
-  $("foot").innerHTML = track ? trackFoot() : tab === "office" ? officeFoot() : `Boarding stop: Elliott Ave W & W Prospect St (evening)
+  $("foot").innerHTML = track ? trackFoot() : tab === "office" ? officeFoot() : `Boarding stop: ${origin ? esc(origin.id + " · " + origin.name + " (" + origin.direction + ")") : "…"}
     · <a id="redetect">re-detect stop</a><br>
     Board and 545 times are <b>LIVE</b> when the bus reports a position, else <b>SCHED</b>. Ride time is scheduled, so "arrive" is an estimate.
     Shuttle times come from the published EG schedule (Mon–Fri), not live data.
