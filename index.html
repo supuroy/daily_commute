@@ -326,9 +326,14 @@ function startTrack(t) {
 }
 
 // Stepping off the first evening bus: keep showing the next 545s from Westlake instead of going blind.
+function clearWait() {
+  wait545 = null;
+  try { localStorage.removeItem("wait545"); } catch {}
+}
+
 function enterWait545() {
   track = null; trackModel = null; wait545 = { items: null, at: Date.now() };
-  try { localStorage.removeItem("track"); } catch {}
+  try { localStorage.removeItem("track"); localStorage.setItem("wait545", String(Date.now())); } catch {}
   wake(false);
   clearTimeout(timer);
   render();
@@ -514,12 +519,12 @@ $("cards").addEventListener("click", (ev) => {
     return;
   }
   if (ev.target.closest("button[data-stop]")) { if (track && track.leg === "home" && !track.auto) enterWait545(); else stopTrack(); return; }
-  if (ev.target.closest("button[data-wait-close]")) { wait545 = null; render(); refresh(true); return; }
+  if (ev.target.closest("button[data-wait-close]")) { clearWait(); render(); refresh(true); return; }
   const bd = ev.target.closest("button[data-board545]");
   if (bd && wait545 && wait545.items) {
     const x = wait545.items[+bd.dataset.board545];
     if (!x) return;
-    wait545 = null;
+    clearWait();
     startTrack({ tripId: x.a.tripId, serviceDate: x.a.serviceDate, destId: (x.end && x.end.stopId) || BEAR_CREEK_STOP,
       destName: x.end ? x.end.name : "Bear Creek P&R", route: "545", headsign: x.a.tripHeadsign, board: x.t, boardLive: x.live, leg: "545" });
     return;
@@ -702,8 +707,8 @@ function render() {
   if (tab === "home" && origin && !origin.confirmed) banners.push(`<div class="banner warn">No downtown arrivals right now, so the stop direction is unconfirmed.</div>`);
   $("banners").innerHTML = banners.join("");
 
-  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
-  $("tabs").style.display = track || wait545 ? "none" : "";
+  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab && !wait545));
+  $("tabs").style.display = track ? "none" : "";
   const cards = $("cards");
   if (track) renderTrack(cards);
   else if (wait545) renderWait(cards);
@@ -774,6 +779,7 @@ function officeFoot() {
 }
 
 function setTab(t) {
+  clearWait();
   tab = t; backoff = 0; lastError = null;
   clearTimeout(timer);
   render();
@@ -806,6 +812,11 @@ if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catc
   try {   // resume a ride in progress (e.g. after a reload) if it started within the last 3 hours
     const t = JSON.parse(localStorage.getItem("track"));
     if (t && t.tripId && Date.now() - t.board < 3 * 3600 * 1000) { track = t; wake(true); } else localStorage.removeItem("track");
+  } catch {}
+  try {   // resume the "next 545" view after a reload if it was opened within the last 3 hours
+    const w = +localStorage.getItem("wait545");
+    if (!track && w && Date.now() - w < 3 * 3600 * 1000) wait545 = { items: null, at: Date.now() };
+    else if (!track) localStorage.removeItem("wait545");
   } catch {}
   render();
   refresh();
