@@ -555,7 +555,7 @@ async function refresh(manual) {
     const homeOrigin = { id: ORIGIN_STOP, name: "Elliott Ave W & W Prospect St", direction: "SE", confirmed: true };
     const all = await getArrivals(homeOrigin.id, 60);
     const now = nowMs();
-    const arr = all.filter(routeOk).filter((a) => DOWNTOWN_RE.test(a.tripHeadsign))
+    const arr = all.filter(routeOk)
       .map((a) => ({ a, ...live(a, "predictedArrivalTime", "scheduledArrivalTime") }))
       .filter((x) => x.t >= now - 30000 && x.t <= now + LOOKAHEAD_MINUTES * 60000)
       .sort((x, y) => x.t - y.t).slice(0, MAX_TRIPS);
