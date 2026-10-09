@@ -551,8 +551,8 @@ async function refresh(manual) {
   try {
     if (track) { await loadTrack(); lastError = null; backoff = 0; return; }
     if (tab === "office") { await loadOffice(); lastError = null; backoff = 0; return; }
-    if (!origin) await resolveOrigin(false);
-    const all = await getArrivals(origin.id, 60);
+    // For "To 545" (evening) tab: query directly from Elliott Ave, no stop detection needed
+    const all = await getArrivals(ORIGIN_STOP, 60);
     const now = nowMs();
     const arr = all.filter(routeOk)
       .map((a) => ({ a, ...live(a, "predictedArrivalTime", "scheduledArrivalTime") }))
@@ -681,7 +681,7 @@ function render() {
 
   const cur = track ? trackModel : tab === "office" ? officeModel : model;
   $("updated").textContent = cur ? "Updated " + new Date(cur.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" }) : "";
-  $("foot").innerHTML = track ? trackFoot() : tab === "office" ? officeFoot() : `Boarding stop: ${origin ? esc(origin.id + " · " + origin.name + " (" + origin.direction + ")") : "…"}
+  $("foot").innerHTML = track ? trackFoot() : tab === "office" ? officeFoot() : `Boarding stop: Elliott Ave W & W Prospect St (evening)
     · <a id="redetect">re-detect stop</a><br>
     Board and 545 times are <b>LIVE</b> when the bus reports a position, else <b>SCHED</b>. Ride time is scheduled, so "arrive" is an estimate.
     Shuttle times come from the published EG schedule (Mon–Fri), not live data.
