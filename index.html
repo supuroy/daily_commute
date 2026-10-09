@@ -91,7 +91,7 @@
     <div><span id="updated">Loading…</span><button class="refresh" id="refreshBtn" type="button">Refresh</button></div>
   </header>
   <nav class="tabs" id="tabs">
-    <button type="button" data-tab="home">To 545 (evening)</button>
+    <button type="button" data-tab="home">To Home (evening)</button>
     <button type="button" data-tab="office">To office (morning)</button>
   </nav>
   <div id="banners"></div>
@@ -551,7 +551,7 @@ async function refresh(manual) {
   try {
     if (track) { await loadTrack(); lastError = null; backoff = 0; return; }
     if (tab === "office") { await loadOffice(); lastError = null; backoff = 0; return; }
-    // For "To 545" (evening) tab: query directly from Elliott Ave, no stop detection needed
+    // For "To Home" (evening) tab: query directly from Elliott Ave, no stop detection needed
     const all = await getArrivals(ORIGIN_STOP, 60);
     const now = nowMs();
     const arr = all.filter(routeOk)
