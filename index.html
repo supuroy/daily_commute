@@ -130,7 +130,7 @@ const OFFICE_BOARD_D = ["1_575", "3rd Ave & Pike St"];      // northbound D Line
 const BEAR_CREEK_STOP = "1_81755";            // where you board the 545 in the morning (first stop of the inbound trip)
 const USUAL_545_DEPARTURE = "05:56";          // the Bear Creek departure you aim for (24h Seattle time); only used to label it
 const DROPOFF_545 =["1_760", "5th Ave & Pine St"];   // where the 545 drops you downtown
-const WALK_545_TO_3RD_MIN = 2;               // walk from the 545 drop-off to the 3rd Ave stops
+const TRANSFER_BUFFER_MIN = { "24": 0, "33": 0, D: 2 };   // minutes needed between the 545 arriving at 5th & Pine and the next bus reaching its 3rd Ave stop (keys: normRoute)
 const WALK_545_TO_SHUTTLE_MIN = 0;            // walk from the 545 drop-off to the Westlake shuttle stop (1620 4th Ave)
 const BUS_TO_OFFICE_WALK_MIN = 6;             // walk from the Elliott/Prospect stop to your desk (guess: edit me)
 const SHUTTLE_TO_OFFICE_WALK_MIN = 2;         // walk from the campus shuttle drop-off to your desk (guess: edit me)
@@ -574,12 +574,13 @@ async function loadOffice() {
 async function computeOffice(startAt) {
   const now = nowMs();
   const boards = [OFFICE_BOARD_24_33, OFFICE_BOARD_D];
-  const ahead = Math.min(180, Math.max(0, Math.ceil((startAt - now) / 60000)) + LOOKAHEAD_MINUTES + WALK_545_TO_3RD_MIN + 2);
+  const ahead = Math.min(180, Math.max(0, Math.ceil((startAt - now) / 60000)) + LOOKAHEAD_MINUTES + 4);
   const lists = await Promise.all(boards.map(([id]) => getArrivals(id, ahead)));
   const cand = [];
   lists.forEach((l, i) => l.filter(routeOk).forEach((a) => {
     const t = live(a, "predictedArrivalTime", "scheduledArrivalTime");
-    if (t.t >= startAt + WALK_545_TO_3RD_MIN * 60000 && t.t <= startAt + LOOKAHEAD_MINUTES * 60000) cand.push({ a, ...t, stopId: boards[i][0], stopName: boards[i][1] });
+    const buffer = TRANSFER_BUFFER_MIN[normRoute(a.routeShortName)] ?? 2;
+    if (t.t >= startAt + buffer * 60000 && t.t <= startAt + LOOKAHEAD_MINUTES * 60000) cand.push({ a, ...t, stopId: boards[i][0], stopName: boards[i][1] });
   }));
   cand.sort((x, y) => x.t - y.t);
   const top = cand.slice(0, MAX_TRIPS);
@@ -789,7 +790,7 @@ function trackFoot() {
 
 function officeFoot() {
   return `Starts from where the 545 drops you (5th Ave &amp; Pine). Buses board on 3rd Ave (24/33 at Pine, D Line at Pike) and get off at Elliott &amp; Prospect.<br>
-    Walk assumptions: ${WALK_545_TO_3RD_MIN} min to 3rd Ave, ${WALK_545_TO_SHUTTLE_MIN} min to the shuttle, ${BUS_TO_OFFICE_WALK_MIN} min from the bus stop to your desk, ${SHUTTLE_TO_OFFICE_WALK_MIN} min from the shuttle to your desk.
+    Walk assumptions: transfer buffer: ${TRANSFER_BUFFER_MIN["24"]} min for the 24/33, ${TRANSFER_BUFFER_MIN.D} min for the D Line, ${WALK_545_TO_SHUTTLE_MIN} min for the shuttle, ${BUS_TO_OFFICE_WALK_MIN} min from the bus stop to your desk, ${SHUTTLE_TO_OFFICE_WALK_MIN} min from the shuttle to your desk.
     Bus ride times are scheduled, shuttle times are the published EG schedule (Mon–Fri). Refreshes every ${REFRESH_SECONDS}s.`;
 }
 
