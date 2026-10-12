@@ -493,7 +493,7 @@ async function begin545() {
     // Default to the next departure (or one that left in the last 2 minutes); "Earlier"/"Later" nudge from there.
     let i = c.findIndex((x) => x.t >= now - 2 * 60000);
     if (i < 0) i = c.length - 1;
-    pick = { cands: c, i };
+    pick = { kind: "545", cands: c, i };
     lastError = null;
   } catch (e) {
     lastError = e instanceof RateLimitError ? new Error("Rate limited. Try again in a moment.") : e;
@@ -501,10 +501,65 @@ async function begin545() {
   render();
 }
 
+// A bus you caught that the list didn't offer (e.g. you made a tight connection): pick it from recent and upcoming departures.
+async function beginBus() {
+  try {
+    const leg = tab;
+    let stops;
+    if (leg === "office") stops = [OFFICE_BOARD_24_33, OFFICE_BOARD_D];
+    else { if (!origin) await resolveOrigin(false); stops = [[origin.id, origin.name]]; }
+    const lists = await Promise.all(stops.map(([id]) =>
+      api(`arrivals-and-departures-for-stop/${id}`, { minutesBefore: 15, minutesAfter: 25 }).then((r) => r.data.entry.arrivalsAndDepartures || [])));
+    const c = lists.flatMap((l, i) => l.filter(routeOk).filter((a) => leg === "office" || DOWNTOWN_RE.test(a.tripHeadsign))
+      .map((a) => ({ a, ...live(a, "predictedArrivalTime", "scheduledArrivalTime"), stopName: stops[i][1] })))
+      .sort((x, y) => x.t - y.t);
+    if (!c.length) throw new Error("No 24 / 33 / D Line departures found around now.");
+    // Default to the most recent bus that has already come through; "Earlier"/"Later" nudge from there.
+    const now = nowMs();
+    let i = 0;
+    c.forEach((x, n) => { if (x.t <= now) i = n; });
+    pick = { kind: "bus", leg, cands: c, i };
+    lastError = null;
+  } catch (e) {
+    lastError = e instanceof RateLimitError ? new Error("Rate limited. Try again in a moment.") : e;
+  }
+  render();
+}
+
+async function startBus(x, leg) {
+  let destId = OFFICE_STOP, destName = "Elliott Ave W & W Prospect St";
+  if (leg === "home") {
+    try {
+      if ((await rideFor(x.a, origin.id)) == null) throw new Error("Couldn't find 3rd & Pike on that bus's route.");
+    } catch (e) {
+      lastError = e instanceof RateLimitError ? new Error("Rate limited. Try again in a moment.") : e;
+      render();
+      return;
+    }
+    destId = transferStopId; destName = TRANSFER_STOP_NAME;
+  }
+  startTrack({ tripId: x.a.tripId, serviceDate: x.a.serviceDate, destId, destName, route: x.a.routeShortName,
+    headsign: x.a.tripHeadsign, board: x.t, boardLive: x.live, leg });
+}
+
+const pickBusBtn = `<button class="track stop" type="button" data-pickbus="1">My bus isn't listed</button>`;
+
 const seattleHM = (ms) => new Intl.DateTimeFormat("en-GB", { timeZone: "America/Los_Angeles", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(ms));
 
 function renderPick(cards) {
   const x = pick.cands[pick.i];
+  if (pick.kind === "bus") {
+    cards.innerHTML = `<section class="card best">
+    <div class="top"><span class="route r-${esc(normRoute(x.a.routeShortName))}">${esc(x.a.routeShortName)}</span><span class="head">${esc(x.a.tripHeadsign)}</span></div>
+    <div class="big">${x.t > nowMs() ? "Arrives" : "Came through"} ${fmt(x.t)}${tag(x.live)}</div>
+    <div class="row"><span class="k">At</span><span class="v">${esc(x.stopName)}</span></div>
+    <div class="row"><span class="k">Is this the bus you're on?</span></div>
+    <button class="track" type="button" data-pick="yes">Yes, track it</button>
+    <button class="track stop" type="button" data-pick="prev"${pick.i === 0 ? " disabled" : ""}>◀ Earlier</button>
+    <button class="track stop" type="button" data-pick="next"${pick.i === pick.cands.length - 1 ? " disabled" : ""}>Later ▶</button>
+    <button class="track stop" type="button" data-pick="cancel">Cancel</button></section>`;
+    return;
+  }
   cards.innerHTML = `<section class="card best">
     <div class="top"><span class="route r-545">545</span><span class="head">${esc(x.a.tripHeadsign)}</span></div>
     <div class="big">${x.t > nowMs() ? "Leaves" : "Left"} Bear Creek P&amp;R ${fmt(x.t)}${tag(x.live)}</div>
@@ -518,6 +573,7 @@ function renderPick(cards) {
 
 $("cards").addEventListener("click", (ev) => {
   if (ev.target.closest("button[data-ride545]")) { begin545(); return; }
+  if (ev.target.closest("button[data-pickbus]")) { beginBus(); return; }
   const pk = ev.target.closest("button[data-pick]");
   if (pk && pick) {
     const d = pk.dataset.pick;
@@ -526,6 +582,7 @@ $("cards").addEventListener("click", (ev) => {
     else if (d === "cancel") pick = null;
     else if (d === "yes") {
       const x = pick.cands[pick.i];
+      if (pick.kind === "bus") { const leg = pick.leg; pick = null; startBus(x, leg); return; }
       pick = null;
       startTrack({ tripId: x.a.tripId, serviceDate: x.a.serviceDate, destId: DROPOFF_545[0], destName: DROPOFF_545[1], route: "545",
         headsign: x.a.tripHeadsign, board: x.t, boardLive: x.live, auto: true });
@@ -729,9 +786,10 @@ function render() {
   const cards = $("cards");
   if (track) renderTrack(cards);
   else if (wait545) renderWait(cards);
+  else if (pick && tab === "home") renderPick(cards);
   else if (tab === "office") renderOffice(cards);
   else if (!model) { cards.innerHTML = lastError ? "" : `<div class="empty">Loading…</div>`; }
-  else if (model.noBuses) cards.innerHTML = `<div class="empty">No upcoming 24 / 33 / D Line buses or EG shuttles in the next ${LOOKAHEAD_MINUTES} minutes.<br><small>${esc(model.seen)}. Retrying; the stop will be re-detected if this keeps happening.</small></div>`;
+  else if (model.noBuses) cards.innerHTML = `<div class="empty">No upcoming 24 / 33 / D Line buses or EG shuttles in the next ${LOOKAHEAD_MINUTES} minutes.<br><small>${esc(model.seen)}. Retrying; the stop will be re-detected if this keeps happening.</small></div>` + pickBusBtn;
   else {
     const now = nowMs();
     cards.innerHTML = model.options.map((o, i) => {
@@ -751,7 +809,7 @@ function render() {
         ${rows.join("")}
         ${trackBtns(o, i)}
       </section>`;
-    }).join("") + (model.no545 ? `<div class="banner warn">No 545 departures found at Westlake in the next 2 hours.</div>` : "");
+    }).join("") + (model.no545 ? `<div class="banner warn">No 545 departures found at Westlake in the next 2 hours.</div>` : "") + pickBusBtn;
   }
 
   const cur = track ? trackModel : wait545 ? wait545 : tab === "office" ? officeModel : model;
@@ -768,7 +826,7 @@ function render() {
 
 function renderOffice(cards) {
   if (pick) { renderPick(cards); return; }
-  const ride545 = `<button class="track" type="button" data-ride545="1">I'm on the 545</button>`;
+  const ride545 = `<button class="track" type="button" data-ride545="1">I'm on the 545</button>${pickBusBtn}`;
   if (!officeModel) { cards.innerHTML = ride545 + (lastError ? "" : `<div class="empty">Loading…</div>`); return; }
   if (!officeModel.options.length) {
     cards.innerHTML = ride545 + `<div class="empty">No 24 / 33 / D Line buses or EG shuttles in the next ${LOOKAHEAD_MINUTES} minutes.</div>`;
@@ -798,6 +856,7 @@ function officeFoot() {
 
 function setTab(t) {
   clearWait();
+  pick = null;
   tab = t; backoff = 0; lastError = null;
   clearTimeout(timer);
   render();
