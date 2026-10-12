@@ -107,7 +107,7 @@ const ORIGIN_ROUTES = ["24", "33", "D Line"]; // matched tolerantly ("D", "D Lin
 const TRANSFER_STOP_NAME = "3rd Ave & Pike St";
 const WESTLAKE_STOP = "1_700";                // 4th Ave & Pike St
 const WESTLAKE_ROUTE = "545";
-const WALK_MINUTES = 3;
+const TO_545_BUFFER_MIN = { "24": 0, "33": 0, D: 2 };   // minutes between getting off the first bus and the 545 leaving Westlake (keys: normRoute)
 const REFRESH_SECONDS = 30;
 const TOP_N = 3;                              // show only the best N options (ranked by which 545 you catch)
 const LOOKAHEAD_MINUTES = 45;                 // how far ahead to consider buses and shuttles when ranking
@@ -120,7 +120,7 @@ const SHUTTLE_TO_WESTLAKE = [
   ["17:10", "17:30"], ["17:20", "17:40"], ["17:45", "18:05"], ["17:55", "18:15"], ["18:10", "18:30"], ["18:30", "18:50"],
 ];
 const SHUTTLE_ACCESS_MINUTES = 5;   // time you need to reach the campus shuttle stop (hides shuttles you can't make)
-const SHUTTLE_WALK_MINUTES = 3;     // walk from the Westlake shuttle stop to the 545 stop
+const SHUTTLE_WALK_MINUTES = 0;     // gap between the Westlake shuttle drop-off and the 545 stop (right next to each other)
 const SHUTTLE_MAX = 4;              // how many upcoming shuttles to consider
 const MAX_TRIPS = 8;                         // how many upcoming buses to consider
 // --- "To office" tab: you've just stepped off the 545 at 5th Ave & Pine (1_760) and want the fastest way to work ---
@@ -164,6 +164,7 @@ const routeOk = (a) => WANTED.has(normRoute(a.routeShortName));
 const normName = (s) => String(s || "").toLowerCase().replace(/\bavenue\b/g, "ave").replace(/\bstreet\b/g, "st")
   .replace(/[^a-z0-9& ]/g, " ").replace(/\s+/g, " ").trim();
 const TARGET_NAME = normName(TRANSFER_STOP_NAME);
+const buffer545 = (route) => TO_545_BUFFER_MIN[normRoute(route)] ?? 2;
 
 class RateLimitError extends Error {}
 
@@ -420,7 +421,7 @@ async function loadTrack() {
   // Evening first leg: keep the next 545 you can catch, based on this bus's live ETA plus the walk.
   if (track.leg === "home" && !passed) {
     try {
-      const ready = eta + WALK_MINUTES * 60000;
+      const ready = eta + buffer545(track.route) * 60000;
       const b = (await load545s()).find((y) => minuteOf(y.t) >= minuteOf(ready));
       if (b) {
         const end = await endFor(b.a).catch(() => null);
@@ -656,7 +657,7 @@ async function refresh(manual) {
         tripId: x.a.tripId, serviceDate: x.a.serviceDate, destId: ride != null ? transferStopId : null, destName: TRANSFER_STOP_NAME };
       if (ride != null) {
         o.via = x.t + ride * 1000; o.viaLabel = "Arrive 3rd &amp; Pike";
-        const ready = o.via + WALK_MINUTES * 60000;
+        const ready = o.via + buffer545(o.route) * 60000;
         const b = buses545.find((y) => minuteOf(y.t) >= minuteOf(ready));
         if (b) { o.bus = b.t; o.busLive = b.live; o.wait = b.t - ready; o.busA = b.a; }
       }
@@ -759,7 +760,7 @@ function render() {
     · <a id="redetect">re-detect stop</a><br>
     Board and 545 times are <b>LIVE</b> when the bus reports a position, else <b>SCHED</b>. Ride time is scheduled, so "arrive" is an estimate.
     Shuttle times come from the published EG schedule (Mon–Fri), not live data.
-    Walk allowance: ${WALK_MINUTES} min (shuttle: ${SHUTTLE_WALK_MINUTES}). Refreshes every ${REFRESH_SECONDS}s.`;
+    Transfer gap to the 545: ${TO_545_BUFFER_MIN["24"]} min after the 24/33, ${TO_545_BUFFER_MIN.D} min after the D Line, ${SHUTTLE_WALK_MINUTES} min after the shuttle. Refreshes every ${REFRESH_SECONDS}s.`;
   $("foot").innerHTML += `<br>API key: ${KEY === "TEST" ? "shared test key" : "your own key"}`;
   const r = $("redetect");
   if (r) r.onclick = () => { origin = null; try { localStorage.removeItem("origin:" + ORIGIN_STOP); } catch {} rideSecs.clear(); transferStopId = null; refresh(true); };
