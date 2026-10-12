@@ -48,6 +48,17 @@
     else if (p.startsWith("arrivals-and-departures-for-stop/")) {
       const id = p.split("/")[1];
       body = ok({ arrivalsAndDepartures: id === "1_700" ? westlake : (routes[id] || []) });
+    } else if (p === "trip-details/tnext1") {   // the 24's next trip in its block: starts where trip t1 ended, then reaches 3rd & Pike
+      const t0 = secOf(routes[B].find((a) => a.tripId === "t1").scheduledArrivalTime);
+      body = ok({ schedule: { stopTimes: [
+        { stopId: "1_mid", arrivalTime: t0 + 240 }, { stopId: "1_3P", arrivalTime: t0 + 14 * 60 },
+      ] } }, { stops: [{ id: "1_3P", name: "3rd Ave & Pike St" }, { id: "1_mid", name: "Westlake Ave & 7th" }] });
+    } else if (p === "trip-details/t1") {   // ends before 3rd & Pike; the bus continues as trip "tnext1"
+      const t0 = secOf(routes[B].find((a) => a.tripId === "t1").scheduledArrivalTime);
+      body = ok({ serviceDate: svc, schedule: { nextTripId: "tnext1", stopTimes: [
+        { stopId: B, arrivalTime: t0 }, { stopId: "1_mid", arrivalTime: t0 + 240 },
+      ] }, status: { predicted: true, scheduleDeviation: 0, nextStop: "1_mid", nextStopTimeOffset: 90 } },
+      { stops: [{ id: "1_mid", name: "Westlake Ave & 7th" }] });
     } else if (p.startsWith("trip-details/t")) {
       const id = p.split("/")[1];
       const start = routes[B].find((a) => a.tripId === id);

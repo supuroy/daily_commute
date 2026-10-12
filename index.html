@@ -119,7 +119,7 @@ const SHUTTLE_TO_WESTLAKE = [
   ["15:55", "16:15"], ["16:10", "16:30"], ["16:25", "16:45"], ["16:35", "16:55"], ["16:45", "17:05"], ["16:55", "17:15"],
   ["17:10", "17:30"], ["17:20", "17:40"], ["17:45", "18:05"], ["17:55", "18:15"], ["18:10", "18:30"], ["18:30", "18:50"],
 ];
-const SHUTTLE_ACCESS_MINUTES = 5;   // time you need to reach the campus shuttle stop (hides shuttles you can't make)
+const SHUTTLE_ACCESS_MINUTES = 0;   // no "time to get there" filter: you judge whether you can make it (shuttle + bus lists show what's next)
 const SHUTTLE_WALK_MINUTES = 0;     // gap between the Westlake shuttle drop-off and the 545 stop (right next to each other)
 const SHUTTLE_SLACK_MIN = 10;       // prefer the shuttle for a given 545 unless a bus lets you leave more than this many minutes later
 const SHUTTLE_MAX = 4;             // how many upcoming shuttles to consider
@@ -274,10 +274,29 @@ function findTransfer(td, originId) {
   return times[idx].arrivalTime - times[o].arrivalTime;
 }
 
+// The 24 and 33 "Downtown Seattle" trips end at 3rd & Cedar, and the same bus carries on as the next trip in its block
+// (through 3rd & Pike). Stitch that next trip's stops on so the whole ride is visible.
+const nextTrips = new Map();
+async function extendTrip(td) {
+  const e = td.data.entry, sch = e.schedule;
+  if (!sch.nextTripId) return td;
+  let nx = nextTrips.get(sch.nextTripId);
+  if (!nx) {
+    nx = await api(`trip-details/${encodeURIComponent(sch.nextTripId)}`, { serviceDate: e.serviceDate });
+    nextTrips.set(sch.nextTripId, nx);
+  }
+  const a = sch.stopTimes || [], b = nx.data.entry.schedule.stopTimes || [];
+  const joined = [...a, ...(a.length && b.length && b[0].stopId === a[a.length - 1].stopId ? b.slice(1) : b)];
+  return { ...td, data: { ...td.data,
+    entry: { ...e, schedule: { ...sch, stopTimes: joined, nextTripId: nx.data.entry.schedule.nextTripId } },
+    references: { ...td.data.references, stops: [...(td.data.references.stops || []), ...(nx.data.references.stops || [])] } } };
+}
+
 async function rideFor(a, fromStopId) {
   if (rideSecs.has(a.tripId)) return rideSecs.get(a.tripId);
-  const td = await api(`trip-details/${encodeURIComponent(a.tripId)}`, { serviceDate: a.serviceDate });
-  const secs = findTransfer(td, fromStopId || origin?.id);
+  let td = await api(`trip-details/${encodeURIComponent(a.tripId)}`, { serviceDate: a.serviceDate });
+  let secs = findTransfer(td, fromStopId || origin?.id);
+  if (secs == null) { td = await extendTrip(td); secs = findTransfer(td, fromStopId || origin?.id); }
   if (secs == null) return null;
   rideSecs.set(a.tripId, secs);
   return secs;
@@ -398,7 +417,8 @@ async function load545s() {
 }
 
 async function loadTrack() {
-  const td = await api(`trip-details/${encodeURIComponent(track.tripId)}`, { serviceDate: track.serviceDate });
+  let td = await api(`trip-details/${encodeURIComponent(track.tripId)}`, { serviceDate: track.serviceDate });
+  if (!(td.data.entry.schedule.stopTimes || []).some((t) => t.stopId === track.destId)) td = await extendTrip(td);
   const e = td.data.entry, st = e.schedule.stopTimes || [];
   const names = new Map((td.data.references.stops || []).map((s) => [s.id, s.name]));
   const di = st.findIndex((t) => t.stopId === track.destId);
@@ -786,7 +806,8 @@ async function refresh(manual) {
     const now = nowMs();
     const arr = all.filter(routeOk)
       .map((a) => ({ a, ...live(a, "predictedArrivalTime", "scheduledArrivalTime") }))
-      .filter((x) => x.t >= now - 30000 && x.t <= now + LOOKAHEAD_MINUTES * 60000)
+      // Keep a bus listed through the minute it's due (one more minute if it has no live position, since it may be running late).
+      .filter((x) => minuteOf(x.t) >= minuteOf(now) - (x.live ? 0 : 1) && x.t <= now + LOOKAHEAD_MINUTES * 60000)
       .sort((x, y) => x.t - y.t).slice(0, MAX_TRIPS);
     seen = `${all.length} arrivals at ${origin.id}` + (all.length ? ` (${[...new Set(all.map((a) => a.routeShortName))].join(", ")})` : "");
     console.log("[refresh]", seen, "| matching:", arr.length);
