@@ -311,7 +311,8 @@ function shuttleRuns(now, table = SHUTTLE_TO_WESTLAKE, accessMin = SHUTTLE_ACCES
   const toSec = (s) => +s.slice(0, 2) * 3600 + +s.slice(3) * 60;
   return table
     .map(([d, a]) => ({ dep: now + (toSec(d) - sec) * 1000, arr: now + (toSec(a) - sec) * 1000 }))
-    .filter((r) => r.dep >= from + accessMin * 60000 && r.dep <= from + LOOKAHEAD_MINUTES * 60000)
+    // Shuttle times are published to the minute, so compare against the arrival minute (an ETA of 6:30:20 still catches the 6:30).
+    .filter((r) => r.dep >= Math.floor(from / 60000) * 60000 + accessMin * 60000 && r.dep <= from + LOOKAHEAD_MINUTES * 60000)
     .slice(0, SHUTTLE_MAX);
 }
 
