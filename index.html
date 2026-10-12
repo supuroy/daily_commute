@@ -121,7 +121,8 @@ const SHUTTLE_TO_WESTLAKE = [
 ];
 const SHUTTLE_ACCESS_MINUTES = 5;   // time you need to reach the campus shuttle stop (hides shuttles you can't make)
 const SHUTTLE_WALK_MINUTES = 0;     // gap between the Westlake shuttle drop-off and the 545 stop (right next to each other)
-const SHUTTLE_MAX = 4;              // how many upcoming shuttles to consider
+const SHUTTLE_SLACK_MIN = 10;       // prefer the shuttle for a given 545 unless a bus lets you leave more than this many minutes later
+const SHUTTLE_MAX = 4;             // how many upcoming shuttles to consider
 const MAX_TRIPS = 8;                         // how many upcoming buses to consider
 // --- "To office" tab: you've just stepped off the 545 at 5th Ave & Pine (1_760) and want the fastest way to work ---
 const OFFICE_STOP = "1_14070";                // Elliott Ave W & W Prospect St, northbound pole (where the bus drops you)
@@ -687,6 +688,23 @@ async function computeOffice(startAt) {
   return { options, at: Date.now(), none: !cand.length && !options.length };
 }
 
+// One card per distinct 545, so the list shows real choices. `options` is sorted by 545 time, then latest-leaving first.
+// For each 545 the latest-leaving option wins, except that a shuttle (the shortest hop to the 545 stop) is preferred
+// when it also makes that 545 and leaves no more than SHUTTLE_SLACK_MIN earlier than the best bus.
+function pickPerBus(options) {
+  const groups = new Map();
+  options.forEach((o) => {
+    const k = o.busA && o.busA.tripId;
+    if (k) groups.set(k, [...(groups.get(k) || []), o]);
+  });
+  const keep = new Set();
+  groups.forEach((list) => {
+    const shuttle = list.find((o) => o.route === "Shuttle");
+    keep.add(shuttle && list[0].board - shuttle.board <= SHUTTLE_SLACK_MIN * 60000 ? shuttle : list[0]);
+  });
+  return options.filter((o) => !o.busA || keep.has(o));
+}
+
 // ---------- main refresh ----------
 const live = (a, pred, sched) => (a.predicted && a[pred] > 0) ? { t: a[pred], live: true } : { t: a[sched], live: false };
 
@@ -754,10 +772,7 @@ async function refresh(manual) {
     }
     // Rank: earliest 545 first; for the same 545, the option that lets you leave later; options with no 545 last.
     options.sort((p, q) => (p.bus ?? Infinity) - (q.bus ?? Infinity) || q.board - p.board);
-    // One card per distinct 545 (the first, i.e. latest-leaving, option for it), so the list shows real choices.
-    const seen545 = new Set();
-    const picked = options.filter((o) => { const k = o.busA ? o.busA.tripId : null; if (k && seen545.has(k)) return false; if (k) seen545.add(k); return true; });
-    options.splice(0, options.length, ...picked.slice(0, TOP_N));
+    options.splice(0, options.length, ...pickPerBus(options).slice(0, TOP_N));
     // Estimated arrival at the 545's last stop (Bear Creek P&R): live departure + scheduled run time.
     const uniq = [...new Map(options.filter((o) => o.busA).map((o) => [o.busA.tripId, o.busA])).values()];
     const ends = new Map();
