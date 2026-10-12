@@ -474,6 +474,8 @@ function renderTrack(cards) {
   const soon = m && !m.passed && (m.left <= 2 || m.eta - now <= 2 * 60000);
   cards.innerHTML = `<section class="card best${soon ? " alert" : ""}">${head}${body}
     <div class="row"><span class="k">Boarded (fixed)</span><span class="v">${fmt(t.board)}</span></div>
+    ${t.boardStopId && !t.auto && (t.leg === "home" || t.leg === "office") ? `<button class="track stop" type="button" data-nudge="-1">◀ Earlier ${esc(t.route)}</button>
+    <button class="track stop" type="button" data-nudge="1">Later ${esc(t.route)} ▶</button>` : ""}
     ${stopBtn}</section>`;
 }
 
@@ -511,7 +513,7 @@ async function beginBus() {
     const lists = await Promise.all(stops.map(([id]) =>
       api(`arrivals-and-departures-for-stop/${id}`, { minutesBefore: 15, minutesAfter: 25 }).then((r) => r.data.entry.arrivalsAndDepartures || [])));
     const c = lists.flatMap((l, i) => l.filter(routeOk).filter((a) => leg === "office" || DOWNTOWN_RE.test(a.tripHeadsign))
-      .map((a) => ({ a, ...live(a, "predictedArrivalTime", "scheduledArrivalTime"), stopName: stops[i][1] })))
+      .map((a) => ({ a, ...live(a, "predictedArrivalTime", "scheduledArrivalTime"), stopName: stops[i][1], stopId: stops[i][0] })))
       .sort((x, y) => x.t - y.t);
     if (!c.length) throw new Error("No 24 / 33 / D Line departures found around now.");
     // Default to the most recent bus that has already come through; "Earlier"/"Later" nudge from there.
@@ -539,7 +541,27 @@ async function startBus(x, leg) {
     destId = transferStopId; destName = TRANSFER_STOP_NAME;
   }
   startTrack({ tripId: x.a.tripId, serviceDate: x.a.serviceDate, destId, destName, route: x.a.routeShortName,
-    headsign: x.a.tripHeadsign, board: x.t, boardLive: x.live, leg });
+    headsign: x.a.tripHeadsign, board: x.t, boardLive: x.live, leg, boardStopId: x.stopId });
+}
+
+// Switch the tracked ride to the previous/next departure of the same route from the stop you boarded at.
+async function nudgeTrack(dir) {
+  const t = track;
+  try {
+    const r = await api(`arrivals-and-departures-for-stop/${t.boardStopId}`, { minutesBefore: 30, minutesAfter: 45 });
+    const c = (r.data.entry.arrivalsAndDepartures || [])
+      .filter((a) => normRoute(a.routeShortName) === normRoute(t.route) && (t.leg === "office" || DOWNTOWN_RE.test(a.tripHeadsign)))
+      .map((a) => ({ a, ...live(a, "predictedArrivalTime", "scheduledArrivalTime") }))
+      .sort((x, y) => x.t - y.t);
+    const i = c.findIndex((x) => x.a.tripId === t.tripId);
+    const j = i >= 0 ? i + dir : dir < 0 ? c.map((x) => x.t < t.board).lastIndexOf(true) : c.findIndex((x) => x.t > t.board);
+    const x = c[j];
+    if (!x) throw new Error(`No ${dir < 0 ? "earlier" : "later"} ${t.route} found at this stop.`);
+    startTrack({ ...t, tripId: x.a.tripId, serviceDate: x.a.serviceDate, headsign: x.a.tripHeadsign, board: x.t, boardLive: x.live });
+  } catch (e) {
+    lastError = e instanceof RateLimitError ? new Error("Rate limited. Try again in a moment.") : e;
+    render();
+  }
 }
 
 const pickBusBtn = `<button class="track stop" type="button" data-pickbus="1">My bus isn't listed</button>`;
@@ -574,6 +596,8 @@ function renderPick(cards) {
 $("cards").addEventListener("click", (ev) => {
   if (ev.target.closest("button[data-ride545]")) { begin545(); return; }
   if (ev.target.closest("button[data-pickbus]")) { beginBus(); return; }
+  const nd = ev.target.closest("button[data-nudge]");
+  if (nd && track) { nudgeTrack(+nd.dataset.nudge); return; }
   const pk = ev.target.closest("button[data-pick]");
   if (pk && pick) {
     const d = pk.dataset.pick;
@@ -607,7 +631,7 @@ $("cards").addEventListener("click", (ev) => {
   const o = (tab === "office" ? officeModel : model).options[+b.dataset.i];
   if (!o) return;
   startTrack({ tripId: o.tripId, serviceDate: o.serviceDate, destId: o.destId, destName: o.destName, route: o.route,
-    headsign: o.headsign, board: o.board, boardLive: o.boardLive, leg: tab });
+    headsign: o.headsign, board: o.board, boardLive: o.boardLive, leg: tab, boardStopId: tab === "office" ? o.boardStopId : origin && origin.id });
 });
 
 // ---------- "To office" tab ----------
@@ -649,7 +673,7 @@ async function computeOffice(startAt) {
     const secs = rides[i].status === "fulfilled" ? rides[i].value : null;
     if (secs == null) return;
     const arr = x.t + secs * 1000;
-    options.push({ route: x.a.routeShortName, headsign: x.a.tripHeadsign, board: x.t, boardLive: x.live, boardAt: x.stopName,
+    options.push({ route: x.a.routeShortName, headsign: x.a.tripHeadsign, board: x.t, boardLive: x.live, boardAt: x.stopName, boardStopId: x.stopId,
       tripId: x.a.tripId, serviceDate: x.a.serviceDate, destId: OFFICE_STOP, destName: "Elliott Ave W & W Prospect St",
       arr, arrLabel: "Get off at Elliott &amp; Prospect", office: arr + BUS_TO_OFFICE_WALK_MIN * 60000 });
   });
