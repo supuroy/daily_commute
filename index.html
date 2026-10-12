@@ -59,6 +59,9 @@
   .route.sm { font-size: .95rem; padding: 1px 8px; min-width: 0; vertical-align: 1px; }
   .head { color: var(--muted); font-size: .9rem; flex: 1; min-width: 0; }
   .badge-best { background: var(--best); color: #fff; font-size: .75rem; font-weight: 700; padding: 3px 8px; border-radius: 8px; }
+  .badge-rush { background: var(--accent); }
+  .nudge { display: flex; gap: 8px; }
+  .nudge button.track { flex: 1; margin-right: 0; font-size: 1.1rem; }
   .big { font-size: 2.1rem; font-weight: 800; line-height: 1.1; margin-bottom: 10px; }
   .big small { font-size: 1rem; font-weight: 500; color: var(--muted); }
   .row { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 6px 0; border-top: 1px solid var(--line); }
@@ -550,8 +553,8 @@ function renderTrack(cards) {
   const soon = m && !m.passed && (m.left <= 2 || m.eta - now <= 2 * 60000);
   cards.innerHTML = `<section class="card best${soon ? " alert" : ""}">${head}${body}
     <div class="row"><span class="k">Boarded (fixed)</span><span class="v">${fmt(t.board)}</span></div>
-    ${t.boardStopId && !t.auto && (t.leg === "home" || t.leg === "office") ? `<button class="track stop" type="button" data-nudge="-1">◀ Earlier ${esc(t.route)}</button>
-    <button class="track stop" type="button" data-nudge="1">Later ${esc(t.route)} ▶</button>` : ""}
+    ${t.boardStopId && !t.auto && (t.leg === "home" || t.leg === "office") ? `<div class="nudge"><button class="track stop" type="button" data-nudge="-1" aria-label="Earlier ${esc(t.route)}" title="Earlier ${esc(t.route)}">◀</button>
+    <button class="track stop" type="button" data-nudge="1" aria-label="Later ${esc(t.route)}" title="Later ${esc(t.route)}">▶</button></div>` : ""}
     ${stopBtn}</section>`;
 }
 
@@ -653,8 +656,8 @@ function renderPick(cards) {
     <div class="row"><span class="k">At</span><span class="v">${esc(x.stopName)}</span></div>
     <div class="row"><span class="k">Is this the bus you're on?</span></div>
     <button class="track" type="button" data-pick="yes">Yes, track it</button>
-    <button class="track stop" type="button" data-pick="prev"${pick.i === 0 ? " disabled" : ""}>◀ Earlier</button>
-    <button class="track stop" type="button" data-pick="next"${pick.i === pick.cands.length - 1 ? " disabled" : ""}>Later ▶</button>
+    <button class="track stop" type="button" data-pick="prev"${pick.i === 0 ? " disabled" : ""} aria-label="Earlier" title="Earlier">◀</button>
+    <button class="track stop" type="button" data-pick="next"${pick.i === pick.cands.length - 1 ? " disabled" : ""} aria-label="Later" title="Later">▶</button>
     <button class="track stop" type="button" data-pick="cancel">Cancel</button></section>`;
     return;
   }
@@ -664,8 +667,8 @@ function renderPick(cards) {
     ${seattleHM(x.a.scheduledDepartureTime || x.t) === USUAL_545_DEPARTURE ? `<div class="row"><span class="k">Your usual ${USUAL_545_DEPARTURE.replace(/^0/, "")} AM bus</span></div>` : ""}
     <div class="row"><span class="k">Is this the bus you're on?</span></div>
     <button class="track" type="button" data-pick="yes">Yes, track it</button>
-    <button class="track stop" type="button" data-pick="prev"${pick.i === 0 ? " disabled" : ""}>◀ Earlier</button>
-    <button class="track stop" type="button" data-pick="next"${pick.i === pick.cands.length - 1 ? " disabled" : ""}>Later ▶</button>
+    <button class="track stop" type="button" data-pick="prev"${pick.i === 0 ? " disabled" : ""} aria-label="Earlier" title="Earlier">◀</button>
+    <button class="track stop" type="button" data-pick="next"${pick.i === pick.cands.length - 1 ? " disabled" : ""} aria-label="Later" title="Later">▶</button>
     <button class="track stop" type="button" data-pick="cancel">Cancel</button></section>`;
 }
 
@@ -850,7 +853,21 @@ async function refresh(manual) {
     }
     // Rank: earliest 545 first; for the same 545, the option that lets you leave later; options with no 545 last.
     options.sort((p, q) => (p.bus ?? Infinity) - (q.bus ?? Infinity) || q.board - p.board);
-    options.splice(0, options.length, ...pickPerBus(options).slice(0, TOP_N));
+    // Show the next few departures in plain time order so the list stays predictable. Among options that make the same 545,
+    // the recommended one (latest-leaving, shuttle preferred) is marked NO RUSH when an earlier option also makes that 545.
+    const recommended = new Set(pickPerBus(options));
+    const sameBus = new Map();
+    options.forEach((o) => { if (o.busA) sameBus.set(o.busA.tripId, (sameBus.get(o.busA.tripId) || 0) + 1); });
+    const firstBus = Math.min(...options.filter((o) => o.bus).map((o) => o.bus));
+    options.forEach((o) => {
+      const shared = !!o.busA && recommended.has(o) && sameBus.get(o.busA.tripId) > 1;
+      const earlierOption = shared && options.some((p) => p !== o && p.busA && p.busA.tripId === o.busA.tripId && p.board < o.board);
+      o.noRush = earlierOption;          // an earlier option makes the same 545, so you can skip the rush
+      o.preferred = shared && !earlierOption;   // chosen over a later bus (shuttle: shortest hop to the 545 stop)
+      o.best = !!o.busA && recommended.has(o) && o.bus === firstBus;
+    });
+    options.sort((p, q) => p.board - q.board);
+    options.splice(TOP_N);
     // Estimated arrival at the 545's last stop (Bear Creek P&R): live departure + scheduled run time.
     const uniq = [...new Map(options.filter((o) => o.busA).map((o) => [o.busA.tripId, o.busA])).values()];
     const ends = new Map();
@@ -859,9 +876,7 @@ async function refresh(manual) {
       const e = o.busA && ends.get(o.busA.tripId);
       if (e) { o.end = o.bus + e.secs * 1000; o.endName = e.name; o.endStopId = e.stopId; }
     });
-    if (options.length && options[0].bus) options[0].best = true;
-
-    model = { options, seen, at: Date.now(), noBuses: !options.length, no545: options.length && !buses545.length };
+    model ={ options, seen, at: Date.now(), noBuses: !options.length, no545: options.length && !buses545.length };
     lastError = null; backoff = 0;
   } catch (e) {
     console.error(e);
@@ -921,7 +936,7 @@ function render() {
           : `<div class="row"><span class="k">Catch 545</span><span class="v">none found</span></div>`);
       }
       return `<section class="card${o.best ? " best" : ""}">
-        <div class="top"><span class="route r-${esc(normRoute(o.route))}">${esc(o.route)}</span><span class="head">${esc(o.headsign)}</span>${o.best ? `<span class="badge-best">EARLIEST 545</span>` : ""}</div>
+        <div class="top"><span class="route r-${esc(normRoute(o.route))}">${esc(o.route)}</span><span class="head">${esc(o.headsign)}</span>${o.best ? `<span class="badge-best">EARLIEST 545</span>` : ""}${o.noRush ? `<span class="badge-best badge-rush">NO RUSH</span>` : ""}${o.preferred ? `<span class="badge-best badge-rush">PREFERRED</span>` : ""}</div>
         <div class="big">${mins(o.board - now)} <small>· ${fmt(o.board)}${tag(o.boardLive)}</small></div>
         ${rows.join("")}
         ${trackBtns(o, i)}
