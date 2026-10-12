@@ -14,6 +14,12 @@ self.addEventListener("activate", (e) => {
   );
 });
 
+self.addEventListener("notificationclick", (e) => {
+  e.notification.close();
+  e.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true })
+    .then((cs) => (cs.length ? cs[0].focus() : self.clients.openWindow("./"))));
+});
+
 self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== "GET" || url.origin !== location.origin) return;

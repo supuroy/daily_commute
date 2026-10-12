@@ -212,7 +212,7 @@ let model = null;           // last good result ("To 545" tab)
 let officeModel = null;     // last good result ("To office" tab)
 let tab = "home";           // "home" | "office"
 let track = null;           // the trip you're riding: { tripId, serviceDate, destId, destName, route, headsign, board, boardLive }
-let trackModel = null, trackAlerted = false, wakeLock = null;
+let trackModel = null, trackAlerted = false, trackFinalAlerted = false, wakeLock = null;
 let wait545 = null;         // after stepping off the first evening bus: upcoming 545s from Westlake { items, at }
 let pick = null;            // confirming which 545 departure from Bear Creek you're on: { cands, i }
 let busy = false, timer = null, backoff = 0, lastError = null, emptyStreak = 0, seen = "";
@@ -334,7 +334,7 @@ async function wake(on) {
 }
 
 function startTrack(t) {
-  track = t; trackModel = null; trackAlerted = false; backoff = 0; lastError = null;
+  track = t; trackModel = null; trackAlerted = false; trackFinalAlerted = false; backoff = 0; lastError = null;
   try { localStorage.setItem("track", JSON.stringify(t)); } catch {}
   wake(true);
   clearTimeout(timer);
@@ -439,10 +439,65 @@ async function loadTrack() {
     } catch { if (prevModel) { trackModel.next = prevModel.next; trackModel.hasNext = prevModel.hasNext; } }
   }
   if (passed && (track.auto || track.leg === "545")) setTimeout(stopTrack, 0);   // the 545 has passed your drop-off: back to the office options
-  if (!passed && !trackAlerted && (left <= 2 || eta - now <= 2 * 60000)) {
+  const dest = trackModel.destName;
+  if (!passed && !trackFinalAlerted && left === 1) {
+    trackAlerted = trackFinalAlerted = true;
+    alertRider("Next stop is yours", `Get off at ${dest}`);
+  } else if (!passed && !trackAlerted && (left <= 2 || eta - now <= 2 * 60000)) {
     trackAlerted = true;
-    try { navigator.vibrate && navigator.vibrate([400, 200, 400, 200, 400]); } catch {}
+    alertRider(`${left} stop${left === 1 ? "" : "s"} to go`, `Get off at ${dest} · arriving ${fmt(eta)}`);
   }
+}
+
+// ---------- alerts: notification + vibration + beep ----------
+let audioCtx = null;
+function unlockAudio() {   // must run inside a tap so the later beep is allowed
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    audioCtx = audioCtx || new AC();
+    if (audioCtx.state === "suspended") audioCtx.resume();
+  } catch {}
+}
+
+function beep() {
+  try {
+    if (!audioCtx || audioCtx.state !== "running") return;
+    [0, 0.35].forEach((at) => {
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.frequency.value = 880; o.connect(g); g.connect(audioCtx.destination);
+      const t = audioCtx.currentTime + at;
+      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.4, t + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.25);
+      o.start(t); o.stop(t + 0.3);
+    });
+  } catch {}
+}
+
+async function notify(title, body) {
+  try {
+    if (!("Notification" in window) || Notification.permission !== "granted") return;
+    const opts = { body, tag: "bus-alert", renotify: true, vibrate: [400, 200, 400, 200, 400], icon: "icon-192.png", badge: "icon-192.png" };
+    const reg = "serviceWorker" in navigator ? await navigator.serviceWorker.getRegistration() : null;
+    if (reg) await reg.showNotification(title, opts); else new Notification(title, opts);
+  } catch {}
+}
+
+function alertRider(title, body) {
+  try { navigator.vibrate && navigator.vibrate([400, 200, 400, 200, 400]); } catch {}
+  beep();
+  notify(title, body);
+}
+
+function askAlerts() {
+  try { if ("Notification" in window && Notification.permission === "default") Notification.requestPermission().then(render); } catch {}
+}
+
+function alertsLine() {
+  if (!("Notification" in window)) return "Alerts: vibration and beep only (notifications aren't supported here)";
+  const p = Notification.permission;
+  if (p === "granted") return "Alerts: notifications on";
+  if (p === "denied") return "Alerts: notifications blocked, so allow them in Chrome's site settings";
+  return `Alerts: <a id="enableAlerts">turn on notifications</a>`;
 }
 
 function renderTrack(cards) {
@@ -595,6 +650,8 @@ function renderPick(cards) {
 }
 
 $("cards").addEventListener("click", (ev) => {
+  // Tapping to start tracking is the user gesture that lets us ask for notifications and allow the beep.
+  if (ev.target.closest("button[data-track], button[data-pick=yes], button[data-board545]")) { unlockAudio(); askAlerts(); }
   if (ev.target.closest("button[data-ride545]")) { begin545(); return; }
   if (ev.target.closest("button[data-pickbus]")) { beginBus(); return; }
   const nd = ev.target.closest("button[data-nudge]");
@@ -858,7 +915,9 @@ function render() {
     Board and 545 times are <b>LIVE</b> when the bus reports a position, else <b>SCHED</b>. Ride time is scheduled, so "arrive" is an estimate.
     Shuttle times come from the published EG schedule (Mon–Fri), not live data.
     Transfer gap to the 545: ${TO_545_BUFFER_MIN["24"]} min after the 24/33, ${TO_545_BUFFER_MIN.D} min after the D Line, ${SHUTTLE_WALK_MINUTES} min after the shuttle. Refreshes every ${REFRESH_SECONDS}s.`;
-  $("foot").innerHTML += `<br>API key: ${KEY === "TEST" ? "shared test key" : "your own key"}`;
+  $("foot").innerHTML += (track ? `<br>${alertsLine()}` : "") + `<br>API key: ${KEY === "TEST" ? "shared test key" : "your own key"}`;
+  const ea = $("enableAlerts");
+  if (ea) ea.onclick = () => { unlockAudio(); askAlerts(); };
   const r = $("redetect");
   if (r) r.onclick = () => { origin = null; try { localStorage.removeItem("origin:" + ORIGIN_STOP); } catch {} rideSecs.clear(); transferStopId = null; refresh(true); };
 }
@@ -884,7 +943,7 @@ function renderOffice(cards) {
 
 function trackFoot() {
   return `Tracking updates every minute (every 30s in the last 5 minutes) and keeps the screen awake while this page is open.
-    Next stop and stops-to-go use the bus's live position; if it isn't reporting, they follow the schedule (SCHED). You'll get a buzz and a flashing card at 2 stops or 2 minutes out.`;
+    Next stop and stops-to-go use the bus's live position; if it isn't reporting, they follow the schedule (SCHED). You'll get a notification, buzz and beep at 2 stops or 2 minutes out, and again at 1 stop, plus a flashing card. Alerts only fire while this page is open.`;
 }
 
 function officeFoot() {
@@ -904,6 +963,7 @@ function setTab(t) {
 document.querySelectorAll("#tabs button").forEach((b) => { b.onclick = () => setTab(b.dataset.tab); });
 
 $("refreshBtn").onclick = () => { clearTimeout(timer); refresh(true); };
+document.addEventListener("click", () => { if (track) unlockAudio(); });   // a tap on a resumed ride re-enables the beep
 let pressing = false;   // don't swap the DOM out from under a tap in progress
 ["pointerdown"].forEach((n) => document.addEventListener(n, () => { pressing = true; }));
 ["pointerup", "pointercancel"].forEach((n) => document.addEventListener(n, () => { pressing = false; }));
