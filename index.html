@@ -216,6 +216,7 @@ let pick = null;            // confirming which 545 departure from Bear Creek yo
 let busy = false, timer = null, backoff = 0, lastError = null, emptyStreak = 0, seen = "";
 let skew = 0;               // server clock minus device clock, so a wrong device clock can't hide buses
 const nowMs = () => Date.now() + skew;
+const minuteOf = (ms) => Math.floor(ms / 60000);   // "can I make it?" checks ignore seconds: live predictions aren't that precise
 
 // ---------- origin resolution ----------
 async function getArrivals(stopId, minutesAfter) {
@@ -311,8 +312,7 @@ function shuttleRuns(now, table = SHUTTLE_TO_WESTLAKE, accessMin = SHUTTLE_ACCES
   const toSec = (s) => +s.slice(0, 2) * 3600 + +s.slice(3) * 60;
   return table
     .map(([d, a]) => ({ dep: now + (toSec(d) - sec) * 1000, arr: now + (toSec(a) - sec) * 1000 }))
-    // Shuttle times are published to the minute, so compare against the arrival minute (an ETA of 6:30:20 still catches the 6:30).
-    .filter((r) => r.dep >= Math.floor(from / 60000) * 60000 + accessMin * 60000 && r.dep <= from + LOOKAHEAD_MINUTES * 60000)
+    .filter((r) => minuteOf(r.dep) >= minuteOf(from) + accessMin && r.dep <= from + LOOKAHEAD_MINUTES * 60000)
     .slice(0, SHUTTLE_MAX);
 }
 
@@ -421,7 +421,7 @@ async function loadTrack() {
   if (track.leg === "home" && !passed) {
     try {
       const ready = eta + WALK_MINUTES * 60000;
-      const b = (await load545s()).find((y) => y.t >= ready);
+      const b = (await load545s()).find((y) => minuteOf(y.t) >= minuteOf(ready));
       if (b) {
         const end = await endFor(b.a).catch(() => null);
         trackModel.next545 = { t: b.t, live: b.live, wait: b.t - ready, end: end ? b.t + end.secs * 1000 : null, endName: end && end.name };
@@ -581,7 +581,7 @@ async function computeOffice(startAt) {
   lists.forEach((l, i) => l.filter(routeOk).forEach((a) => {
     const t = live(a, "predictedArrivalTime", "scheduledArrivalTime");
     const buffer = TRANSFER_BUFFER_MIN[normRoute(a.routeShortName)] ?? 2;
-    if (t.t >= startAt + buffer * 60000 && t.t <= startAt + LOOKAHEAD_MINUTES * 60000) cand.push({ a, ...t, stopId: boards[i][0], stopName: boards[i][1] });
+    if (minuteOf(t.t) >= minuteOf(startAt) + buffer && t.t <= startAt + LOOKAHEAD_MINUTES * 60000) cand.push({ a, ...t, stopId: boards[i][0], stopName: boards[i][1] });
   }));
   cand.sort((x, y) => x.t - y.t);
   const top = cand.slice(0, MAX_TRIPS);
@@ -657,7 +657,7 @@ async function refresh(manual) {
       if (ride != null) {
         o.via = x.t + ride * 1000; o.viaLabel = "Arrive 3rd &amp; Pike";
         const ready = o.via + WALK_MINUTES * 60000;
-        const b = buses545.find((y) => y.t >= ready);
+        const b = buses545.find((y) => minuteOf(y.t) >= minuteOf(ready));
         if (b) { o.bus = b.t; o.busLive = b.live; o.wait = b.t - ready; o.busA = b.a; }
       }
       return o;
@@ -666,7 +666,7 @@ async function refresh(manual) {
       const o = { route: "Shuttle", headsign: "EG shuttle: campus to Westlake", board: r.dep, boardLive: false, ride: 0,
         via: r.arr, viaLabel: "Arrive Westlake", viaSched: true };
       const ready = r.arr + SHUTTLE_WALK_MINUTES * 60000;
-      const b = buses545.find((y) => y.t >= ready);
+      const b = buses545.find((y) => minuteOf(y.t) >= minuteOf(ready));
       if (b) { o.bus = b.t; o.busLive = b.live; o.wait = b.t - ready; o.busA = b.a; }
       options.push(o);
     }
