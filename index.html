@@ -226,10 +226,22 @@ let skew = 0;               // server clock minus device clock, so a wrong devic
 const nowMs = () => Date.now() + skew;
 const minuteOf = (ms) => Math.floor(ms / 60000);   // "can I make it?" checks ignore seconds: live predictions aren't that precise
 
+// The API sometimes lists one trip twice (two vehicles reporting the same trip, same scheduled time, slightly different
+// predictions). Keep one record per trip: the most recently updated.
+function dedupeTrips(list) {
+  const best = new Map();
+  (list || []).forEach((a) => {
+    const k = `${a.tripId}|${a.serviceDate}|${a.stopId}`;
+    const cur = best.get(k);
+    if (!cur || (a.lastUpdateTime || 0) > (cur.lastUpdateTime || 0)) best.set(k, a);
+  });
+  return [...best.values()];
+}
+
 // ---------- origin resolution ----------
 async function getArrivals(stopId, minutesAfter) {
   const r = await api(`arrivals-and-departures-for-stop/${stopId}`, { minutesBefore: 2, minutesAfter });
-  return r.data.entry.arrivalsAndDepartures || [];
+  return dedupeTrips(r.data.entry.arrivalsAndDepartures);
 }
 
 async function resolveOrigin(force) {
@@ -568,7 +580,7 @@ async function begin545() {
     const now = nowMs();
     // Bear Creek is both the start of the inbound trips and the end of the outbound ones, so keep only buses that
     // leave from here toward downtown (outbound trips have a "Redmond" headsign and can't be boarded here).
-    const c = (r.data.entry.arrivalsAndDepartures || [])
+    const c = (dedupeTrips(r.data.entry.arrivalsAndDepartures))
       .filter((a) => normRoute(a.routeShortName) === WESTLAKE_ROUTE && a.departureEnabled !== false && DOWNTOWN_RE.test(a.tripHeadsign))
       .map((a) => ({ a, ...live(a, "predictedDepartureTime", "scheduledDepartureTime") }))
       .map((x) => (x.t > 0 ? x : { ...x, ...live(x.a, "predictedArrivalTime", "scheduledArrivalTime") }))
@@ -593,7 +605,7 @@ async function beginBus() {
     if (leg === "office") stops = [OFFICE_BOARD_24_33, OFFICE_BOARD_D];
     else { if (!origin) await resolveOrigin(false); stops = [[origin.id, origin.name]]; }
     const lists = await Promise.all(stops.map(([id]) =>
-      api(`arrivals-and-departures-for-stop/${id}`, { minutesBefore: 15, minutesAfter: 25 }).then((r) => r.data.entry.arrivalsAndDepartures || [])));
+      api(`arrivals-and-departures-for-stop/${id}`, { minutesBefore: 15, minutesAfter: 25 }).then((r) => dedupeTrips(r.data.entry.arrivalsAndDepartures))));
     const c = lists.flatMap((l, i) => l.filter(routeOk).filter((a) => leg === "office" || DOWNTOWN_RE.test(a.tripHeadsign))
       .map((a) => ({ a, ...live(a, "predictedArrivalTime", "scheduledArrivalTime"), stopName: stops[i][1], stopId: stops[i][0] })))
       .sort((x, y) => x.t - y.t);
@@ -631,7 +643,7 @@ async function nudgeTrack(dir) {
   const t = track;
   try {
     const r = await api(`arrivals-and-departures-for-stop/${t.boardStopId}`, { minutesBefore: 30, minutesAfter: 45 });
-    const c = (r.data.entry.arrivalsAndDepartures || [])
+    const c = (dedupeTrips(r.data.entry.arrivalsAndDepartures))
       .filter((a) => normRoute(a.routeShortName) === normRoute(t.route) && (t.leg === "office" || DOWNTOWN_RE.test(a.tripHeadsign)))
       .map((a) => ({ a, ...live(a, "predictedArrivalTime", "scheduledArrivalTime") }))
       .sort((x, y) => x.t - y.t);
