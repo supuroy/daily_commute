@@ -60,6 +60,8 @@
   .head { color: var(--muted); font-size: .9rem; flex: 1; min-width: 0; }
   .badge-best { background: var(--best); color: #fff; font-size: .75rem; font-weight: 700; padding: 3px 8px; border-radius: 8px; }
   .badge-rush { background: var(--accent); }
+  .row.awake { align-items: center; cursor: pointer; }
+  .row.awake input { width: 22px; height: 22px; accent-color: var(--accent); }
   .actions { display: flex; gap: 8px; align-items: stretch; margin-top: 10px; }
   .actions button.track { margin: 0; }
   .actions button.arrow { padding: 8px 12px; font-size: .9rem; }
@@ -359,7 +361,7 @@ async function wake(on) {
 function startTrack(t) {
   track = t; trackModel = null; trackAlerted = false; trackFinalAlerted = false; backoff = 0; lastError = null;
   try { localStorage.setItem("track", JSON.stringify(t)); } catch {}
-  wake(true);
+  wake(!!t.awake);
   clearTimeout(timer);
   render();
   refresh(true);
@@ -462,6 +464,7 @@ async function loadTrack() {
       trackModel.hasNext = true;
     } catch { if (prevModel) { trackModel.next = prevModel.next; trackModel.hasNext = prevModel.hasNext; } }
   }
+  if (passed) wake(false);   // your stop is behind you: let the screen sleep even if you forget to tap Done
   if (passed && (track.auto || track.leg === "545")) setTimeout(stopTrack, 0);   // the 545 has passed your drop-off: back to the office options
   const dest = trackModel.destName;
   if (!passed && !trackFinalAlerted && left === 1) {
@@ -554,6 +557,7 @@ function renderTrack(cards) {
   const soon = m && !m.passed && (m.left <= 2 || m.eta - now <= 2 * 60000);
   cards.innerHTML = `<section class="card best${soon ? " alert" : ""}">${head}${body}
     <div class="row"><span class="k">Boarded (fixed)</span><span class="v">${fmt(t.board)}</span></div>
+    <label class="row awake"><span class="k">Keep screen on (for alerts)</span><input type="checkbox" data-awake="1"${t.awake ? " checked" : ""}></label>
     <div class="actions">${t.boardStopId && !t.auto && (t.leg === "home" || t.leg === "office") ? `<button class="track stop arrow" type="button" data-nudge="-1" aria-label="Earlier ${esc(t.route)}" title="Earlier ${esc(t.route)}">◀</button><button class="track stop arrow" type="button" data-nudge="1" aria-label="Later ${esc(t.route)}" title="Later ${esc(t.route)}">▶</button>` : ""}${stopBtn}</div></section>`;
 }
 
@@ -670,6 +674,13 @@ function renderPick(cards) {
     <button class="track stop arrow" type="button" data-pick="next"${pick.i === pick.cands.length - 1 ? " disabled" : ""} aria-label="Later" title="Later">▶</button>
     <button class="track stop" type="button" data-pick="cancel">Cancel</button></div></section>`;
 }
+
+$("cards").addEventListener("change", (ev) => {
+  if (!ev.target.matches("input[data-awake]") || !track) return;
+  track.awake = ev.target.checked;
+  try { localStorage.setItem("track", JSON.stringify(track)); } catch {}
+  wake(track.awake);
+});
 
 $("cards").addEventListener("click", (ev) => {
   // Tapping to start tracking is the user gesture that lets us ask for notifications and allow the beep.
@@ -961,8 +972,9 @@ function renderOffice(cards) {
 }
 
 function trackFoot() {
-  return `Tracking updates every minute (every 30s in the last 5 minutes) and keeps the screen awake while this page is open.
-    Next stop and stops-to-go use the bus's live position; if it isn't reporting, they follow the schedule (SCHED). You'll get a notification, buzz and beep at 2 stops or 2 minutes out, and again at 1 stop, plus a flashing card. Alerts only fire while this page is open.`;
+  return `Tracking updates every minute (every 30s in the last 5 minutes) while this page is open on screen. A locked or hidden page pauses, so tap Refresh when the card looks stale.
+    Next stop and stops-to-go use the bus's live position; if it isn't reporting, they follow the schedule (SCHED).
+    Turn on "Keep screen on" to get a notification, buzz and beep at 2 stops or 2 minutes out, and again at 1 stop; alerts can't fire while the phone is locked.`;
 }
 
 function officeFoot() {
@@ -991,7 +1003,7 @@ document.addEventListener("visibilitychange", () => {
   const cur = track ? trackModel : wait545 ? wait545 : tab === "office" ? officeModel : model;
   if (document.hidden) clearTimeout(timer);
   else {
-    if (track) wake(true);   // the screen lock is released when the page is hidden
+    if (track && track.awake) wake(true);   // the screen lock is released when the page is hidden
     if (!cur || Date.now() - cur.at > (track ? 30 : REFRESH_SECONDS) * 1000) refresh();
     else schedule();
   }
@@ -1006,7 +1018,7 @@ if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catc
   tab = seattleClock(Date.now()).sec < 12 * 3600 ? "office" : "home";   // mornings open on "To office"
   try {   // resume a ride in progress (e.g. after a reload) if it started within the last 3 hours
     const t = JSON.parse(localStorage.getItem("track"));
-    if (t && t.tripId && Date.now() - t.board < 3 * 3600 * 1000) { track = t; wake(true); } else localStorage.removeItem("track");
+    if (t && t.tripId && Date.now() - t.board < 90 * 60 * 1000) { track = t; wake(!!t.awake); } else localStorage.removeItem("track");
   } catch {}
   try {   // resume the "next 545" view after a reload if it was opened within the last 3 hours
     const w = +localStorage.getItem("wait545");
