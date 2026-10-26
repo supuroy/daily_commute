@@ -55,6 +55,9 @@
   .route.r-24, .route.r-33 { background: #f4a300; color: #1a1a1a; }
   .route.r-D { background: #b5123e; color: #fff; }
   .route.r-545 { background: #1f2f86; color: #fff; }
+  .route.r-2 { background: #1a78b8; color: #fff; border-radius: 14px; white-space: nowrap; }
+  .route.r-2::before { content: "2"; display: inline-block; width: 1.25em; height: 1.25em; line-height: 1.25em; margin-right: 6px; border-radius: 50%;
+    background: #3d6e9e; color: #fff; font-size: .8em; text-align: center; vertical-align: 1px; }
   .route.r-SHUTTLE { background: #0f766e; color: #fff; font-size: 1rem; }
   .route.sm { font-size: .95rem; padding: 1px 8px; min-width: 0; vertical-align: 1px; }
   .head { color: var(--muted); font-size: .9rem; flex: 1; min-width: 0; }
@@ -114,6 +117,11 @@ const ORIGIN_ROUTES = ["24", "33", "D Line"]; // matched tolerantly ("D", "D Lin
 const TRANSFER_STOP_NAME = "3rd Ave & Pike St";
 const WESTLAKE_STOP = "1_700";                // 4th Ave & Pike St
 const WESTLAKE_ROUTE = "545";
+// Link 2 Line from Westlake Station to Downtown Redmond (an alternative second leg; a short bus to Redmond TC isn't shown).
+const LINK_STOP = "40_1108";                  // Westlake Station platform for trains toward Downtown Redmond
+const LINK_DEST_STOP = "40_E31-T2";           // Downtown Redmond Station
+const LINK_DEST_SHORT = "Downtown Redmond";
+const TO_LINK_BUFFER_MIN = { "24": 5, "33": 5, D: 5, SHUTTLE: 3 };   // walk from the first-leg drop-off down to the platform (an estimate: edit me)
 const TO_545_BUFFER_MIN = { "24": 0, "33": 0, D: 2 };   // minutes between getting off the first bus and the 545 leaving Westlake (keys: normRoute)
 const REFRESH_SECONDS = 30;
 const TOP_N = 3;                              // show only the best N options (ranked by which 545 you catch)
@@ -400,11 +408,54 @@ function enterWait545() {
   refresh(true);
 }
 
+// ---------- Link 2 Line (Westlake -> Downtown Redmond) ----------
+const linkBuffer = (route) => TO_LINK_BUFFER_MIN[normRoute(route)] ?? 5;
+
+async function loadLinks() {
+  return (await getArrivals(LINK_STOP, 120))
+    .filter((a) => normRoute(a.routeShortName) === "2" && /redmond/i.test(a.tripHeadsign))
+    .map((a) => ({ a, ...live(a, "predictedDepartureTime", "scheduledDepartureTime") }))
+    .map((x) => (x.t > 0 ? x : { ...x, ...live(x.a, "predictedArrivalTime", "scheduledArrivalTime") }))
+    .sort((x, y) => x.t - y.t);
+}
+
+const linkRun = new Map();   // tripId -> scheduled seconds from Westlake to Downtown Redmond
+async function linkSecs(a) {
+  if (linkRun.has(a.tripId)) return linkRun.get(a.tripId);
+  const td = await api(`trip-details/${encodeURIComponent(a.tripId)}`, { serviceDate: a.serviceDate });
+  const st = td.data.entry.schedule.stopTimes || [];
+  const fi = st.findIndex((t) => t.stopId === LINK_STOP);
+  const di = st.findIndex((t, i) => i > fi && t.stopId === LINK_DEST_STOP);
+  if (fi < 0 || di < 0) return null;
+  const secs = st[di].arrivalTime - (st[fi].departureTime ?? st[fi].arrivalTime);
+  linkRun.set(a.tripId, secs);
+  return secs;
+}
+
+// The first train you can make after `ready`, with its estimated arrival at Downtown Redmond.
+async function linkAfter(trains, ready) {
+  const x = trains.find((y) => minuteOf(y.t) >= minuteOf(ready));
+  if (!x) return null;
+  const secs = await linkSecs(x.a).catch(() => null);
+  return { t: x.t, live: x.live, arrive: secs != null ? x.t + secs * 1000 : null };
+}
+
+const linkRows = (l) => `<div class="row"><span class="k">Or <span class="route r-2 sm">2 Line</span> at</span><span class="v">${fmt(l.t)}${tag(l.live)}</span></div>`
+  + (l.arrive ? `<div class="row"><span class="k">Arrive ${LINK_DEST_SHORT}</span><span class="v">${fmt(l.arrive)}<span class="tag est">EST</span></span></div>` : "");
+
 async function loadWait545() {
   const now = nowMs();
   const next = (await load545s()).filter((x) => x.t >= now - 60000).slice(0, 3);
   const ends = await Promise.allSettled(next.map((x) => endFor(x.a)));
-  wait545 = { at: Date.now(), items: next.map((x, i) => ({ ...x, end: ends[i].status === "fulfilled" ? ends[i].value : null })) };
+  let links = [];
+  try {   // the 2 Line is a bonus: never let it break the 545 list
+    const trains = (await loadLinks()).filter((x) => minuteOf(x.t) >= minuteOf(now)).slice(0, 3);
+    links = await Promise.all(trains.map(async (x) => {
+      const s = await linkSecs(x.a).catch(() => null);
+      return { t: x.t, live: x.live, arrive: s != null ? x.t + s * 1000 : null };
+    }));
+  } catch { links = wait545 && wait545.links || []; }
+  wait545 = { at: Date.now(), links, items: next.map((x, i) => ({ ...x, end: ends[i].status === "fulfilled" ? ends[i].value : null })) };
 }
 
 function renderWait(cards) {
@@ -418,7 +469,11 @@ function renderWait(cards) {
     <div class="row"><span class="k">Boards at</span><span class="v">4th Ave &amp; Pike St</span></div>
     ${x.end ? `<div class="row"><span class="k">Arrive ${esc(x.end.name)}</span><span class="v">${fmt(x.t + x.end.secs * 1000)}<span class="tag est">EST</span></span></div>` : ""}
     <button class="track" type="button" data-board545="${i}">I'm on this 545</button>
-  </section>`).join("") + back;
+  </section>`).join("") + (w.links && w.links.length ? `<section class="card">
+    <div class="top"><span class="route r-2">2 Line</span><span class="head"></span></div>
+    <div class="row"><span class="k">To ${LINK_DEST_SHORT} Station</span><span class="v"></span></div>
+    ${w.links.map((l) => `<div class="row"><span class="k">${mins(l.t - now)} · ${fmt(l.t)}${tag(l.live)}</span><span class="v">${l.arrive ? `Arrive ${fmt(l.arrive)}<span class="tag est">EST</span>` : ""}</span></div>`).join("")}
+  </section>` : "") + back;
 }
 
 function stopTrack() {
@@ -474,6 +529,8 @@ async function loadTrack() {
       } else trackModel.next545 = null;
       trackModel.has545 = true;
     } catch { if (prevModel) { trackModel.next545 = prevModel.next545; trackModel.has545 = prevModel.has545; } }   // keep the last answer if this fetch fails
+    try { trackModel.nextLink = await linkAfter(await loadLinks(), eta + linkBuffer(track.route) * 60000); }
+    catch { trackModel.nextLink = prevModel ? prevModel.nextLink : null; }
   }
   // Morning 545: what to do when you get off, based on this bus's live ETA at 5th & Pine.
   if (track.auto && !passed) {
@@ -570,6 +627,7 @@ function renderTrack(cards) {
            <div class="row"><span class="k">Wait at Westlake</span><span class="v">${mins(m.next545.wait)}</span></div>
            ${m.next545.end ? `<div class="row"><span class="k">Arrive ${esc(m.next545.endName)}</span><span class="v">${fmt(m.next545.end)}<span class="tag est">EST</span></span></div>` : ""}`
         : `<div class="row"><span class="k">Next 545 you can catch</span><span class="v">none found</span></div>`;
+      if (m.nextLink) body += linkRows(m.nextLink);
     }
   }
   const soon = m && !m.passed && (m.left <= 2 || m.eta - now <= 2 * 60000);
@@ -887,7 +945,12 @@ async function refresh(manual) {
       const e = o.busA && ends.get(o.busA.tripId);
       if (e) { o.end = o.bus + e.secs * 1000; o.endName = e.name; o.endStopId = e.stopId; }
     });
-    model ={ options, seen, at: Date.now(), noBuses: !options.length, no545: options.length && !buses545.length };
+    // Alternative second leg: the 2 Line from Westlake Station (a bonus: if it fails, the 545 list still shows).
+    try {
+      const trains = await loadLinks();
+      for (const o of options) if (o.ride != null && o.via != null) o.link = await linkAfter(trains, o.via + linkBuffer(o.route) * 60000);
+    } catch { /* leave the 2 Line rows out this time */ }
+    model = { options, seen, at: Date.now(), noBuses: !options.length, no545: options.length && !buses545.length };
     lastError = null; backoff = 0;
   } catch (e) {
     console.error(e);
@@ -945,6 +1008,7 @@ function render() {
              <div class="row"><span class="k">Wait at Westlake</span><span class="v">${mins(o.wait)}</span></div>
              ${o.end ? `<div class="row"><span class="k">Arrive ${esc(o.endName)}</span><span class="v">${fmt(o.end)}<span class="tag est">EST</span></span></div>` : ""}`
           : `<div class="row"><span class="k">Catch 545</span><span class="v">none found</span></div>`);
+        if (o.link) rows.push(linkRows(o.link));
       }
       return `<section class="card${o.best ? " best" : ""}">
         <div class="top"><span class="route r-${esc(normRoute(o.route))}">${esc(o.route)}</span><span class="head"></span>${o.best ? `<span class="badge-best">EARLIEST 545</span>` : ""}${o.noRush ? `<span class="badge-best badge-rush">NO RUSH</span>` : ""}${o.preferred ? `<span class="badge-best badge-rush">PREFERRED</span>` : ""}</div>
@@ -961,6 +1025,7 @@ function render() {
     · <a id="redetect">re-detect stop</a><br>
     Board and 545 times are <b>LIVE</b> when the bus reports a position, else <b>SCHED</b>. Ride time is scheduled, so "arrive" is an estimate.
     Shuttle times come from the published EG schedule (Mon–Fri), not live data.
+    2 Line times are from Westlake Station toward ${LINK_DEST_SHORT}, allowing ${TO_LINK_BUFFER_MIN["24"]} min from the bus drop-off (${TO_LINK_BUFFER_MIN.SHUTTLE} after the shuttle) to reach the platform; the short bus from there to Redmond TC isn't included.
     Transfer gap to the 545: ${TO_545_BUFFER_MIN["24"]} min after the 24/33, ${TO_545_BUFFER_MIN.D} min after the D Line, ${SHUTTLE_WALK_MINUTES} min after the shuttle. Refreshes every ${REFRESH_SECONDS}s.`;
   $("foot").innerHTML += (track ? `<br>${alertsLine()}` : "") + `<br>API key: ${KEY === "TEST" ? "shared test key" : "your own key"}`;
   const ea = $("enableAlerts");

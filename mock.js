@@ -24,6 +24,9 @@
     // Inbound 545 departures from Redmond Transit Center Bay 6 (morning "I'm on the 545" picker)
     "1_71954": [arr("545", "Redmond", "1_71954", "o0", min(0), true),   // wrong-direction bus: must NOT be offered
       arr("545", "Downtown Seattle", "1_71954", "i0", min(-1), true), arr("545", "Downtown Seattle", "1_71954", "i1", min(14), false)],
+    // Link 2 Line toward Downtown Redmond, Westlake Station platform
+    "40_1108": [arr("2 Line", "Downtown Redmond", "40_1108", "L0", min(16), true), arr("2 Line", "Downtown Redmond", "40_1108", "L1", min(26), true),
+      arr("2 Line", "Downtown Redmond", "40_1108", "L2", min(36), false), arr("2 Line", "Downtown Redmond", "40_1108", "L3", min(46), false)],
     // Northbound 3rd Ave stops for the "To office" tab
     "1_590": [arr("24", "West Magnolia", "1_590", "n1", min(5), true), arr("33", "E Magnolia", "1_590", "n2", min(12), false),
       arr("24", "West Magnolia", "1_590", "n5", min(41), false), arr("33", "E Magnolia", "1_590", "n6", min(52), false)],
@@ -68,6 +71,12 @@
         { stopId: "1_3P", arrivalTime: t0 + (rideMin[id] || 10) * 60 },
       ] }, status: { predicted: true, scheduleDeviation: 60, nextStop: "1_mid", nextStopTimeOffset: 90 } },
       { stops: [{ id: "1_3P", name: "3rd Ave & Pike St" }, { id: "1_mid", name: "Westlake Ave & 7th" }] });
+    } else if (p.startsWith("trip-details/L")) {
+      const id = p.split("/")[1];
+      const t0 = secOf(routes["40_1108"].find((a) => a.tripId === id).scheduledArrivalTime);
+      body = ok({ schedule: { stopTimes: [
+        { stopId: "40_1108", arrivalTime: t0, departureTime: t0 }, { stopId: "40_E31-T2", arrivalTime: t0 + 2730 },
+      ] } }, { stops: [{ id: "40_1108", name: "Westlake" }, { id: "40_E31-T2", name: "Downtown Redmond" }] });
     } else if (p.startsWith("trip-details/i")) {
       const id = p.split("/")[1];
       const t0 = secOf(routes["1_71954"].find((a) => a.tripId === id).scheduledArrivalTime);
