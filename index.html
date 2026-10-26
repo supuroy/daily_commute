@@ -134,8 +134,11 @@ const MAX_TRIPS = 8;                         // how many upcoming buses to consi
 const OFFICE_STOP = "1_14070";                // Elliott Ave W & W Prospect St, northbound pole (where the bus drops you)
 const OFFICE_BOARD_24_33 = ["1_590", "3rd Ave & Pine St"];  // northbound 24 / 33
 const OFFICE_BOARD_D = ["1_575", "3rd Ave & Pike St"];      // northbound D Line
-const BEAR_CREEK_STOP = "1_81755";            // where you board the 545 in the morning (first stop of the inbound trip)
-const USUAL_545_DEPARTURE = "05:56";          // the Bear Creek departure you aim for (24h Seattle time); only used to label it
+const REDMOND_TC_BOARD_STOP = "1_71954";      // Redmond Transit Center, Bay 6: where you board the inbound 545 in the morning
+const REDMOND_TC_DROP_STOP = "1_71951";       // Redmond Transit Center, Bay 3: where the outbound 545 drops you in the evening
+const HOME_STOP_NAME = "Redmond Transit Center";
+const HOME_STOP_SHORT = "Redmond TC";
+const USUAL_545_DEPARTURE = "05:52";          // the Redmond TC departure you aim for (24h Seattle time); only used to label it
 const DROPOFF_545 =["1_760", "5th Ave & Pine St"];   // where the 545 drops you downtown
 const TRANSFER_BUFFER_MIN = { "24": 0, "33": 0, D: 2 };   // minutes needed between the 545 arriving at 5th & Pine and the next bus reaching its 3rd Ave stop (keys: normRoute)
 const WALK_545_TO_SHUTTLE_MIN = 0;            // walk from the 545 drop-off to the Westlake shuttle stop (1620 4th Ave)
@@ -220,7 +223,7 @@ let tab = "home";           // "home" | "office"
 let track = null;           // the trip you're riding: { tripId, serviceDate, destId, destName, route, headsign, board, boardLive }
 let trackModel = null, trackAlerted = false, trackFinalAlerted = false, wakeLock = null;
 let wait545 = null;         // after stepping off the first evening bus: upcoming 545s from Westlake { items, at }
-let pick = null;            // confirming which 545 departure from Bear Creek you're on: { cands, i }
+let pick = null;            // confirming which 545 departure from Redmond TC you're on: { cands, i }
 let busy = false, timer = null, backoff = 0, lastError = null, emptyStreak = 0, seen = "";
 let skew = 0;               // server clock minus device clock, so a wrong device clock can't hide buses
 const nowMs = () => Date.now() + skew;
@@ -320,17 +323,20 @@ async function rideFor(a, fromStopId) {
   return secs;
 }
 
-// Scheduled minutes from the Westlake stop to the 545 trip's final stop (cached per trip).
+// Scheduled minutes from the Westlake stop to your home stop on a 545 trip (Redmond TC; falls back to the trip's last stop). Cached per trip.
 const endSecs = new Map();
 async function endFor(a) {
   if (endSecs.has(a.tripId)) return endSecs.get(a.tripId);
   const td = await api(`trip-details/${encodeURIComponent(a.tripId)}`, { serviceDate: a.serviceDate });
   const times = td.data.entry.schedule.stopTimes || [];
-  const from = times.find((t) => t.stopId === WESTLAKE_STOP);
-  const last = times[times.length - 1];
-  if (!from || !last) return null;
-  const name = ((td.data.references.stops || []).find((s) => s.id === last.stopId) || {}).name || "last stop";
-  const res = { secs: last.arrivalTime - (from.departureTime ?? from.arrivalTime), name, stopId: last.stopId };
+  const fi = times.findIndex((t) => t.stopId === WESTLAKE_STOP);
+  if (fi < 0) return null;
+  const from = times[fi];
+  const home = times.find((t, i) => i > fi && t.stopId === REDMOND_TC_DROP_STOP);
+  const stop = home || times[times.length - 1];
+  if (!stop) return null;
+  const name = home ? HOME_STOP_SHORT : ((td.data.references.stops || []).find((s) => s.id === stop.stopId) || {}).name || "last stop";
+  const res = { secs: stop.arrivalTime - (from.departureTime ?? from.arrivalTime), name, stopId: stop.stopId };
   endSecs.set(a.tripId, res);
   return res;
 }
@@ -410,7 +416,7 @@ function renderWait(cards) {
     <div class="top"><span class="route r-545">545</span><span class="head">${esc(x.a.tripHeadsign)}</span>${i === 0 ? `<span class="badge-best">NEXT</span>` : ""}</div>
     <div class="big">${mins(x.t - now)} <small>· ${fmt(x.t)}${tag(x.live)}</small></div>
     <div class="row"><span class="k">Boards at</span><span class="v">4th Ave &amp; Pike St</span></div>
-    ${x.end ? `<div class="row"><span class="k">Arrive ${esc(x.end.name.replace(/\s*(Park\s*(&|and)\s*Ride|P&R).*$/i, "") + " P&R")}</span><span class="v">${fmt(x.t + x.end.secs * 1000)}<span class="tag est">EST</span></span></div>` : ""}
+    ${x.end ? `<div class="row"><span class="k">Arrive ${esc(x.end.name)}</span><span class="v">${fmt(x.t + x.end.secs * 1000)}<span class="tag est">EST</span></span></div>` : ""}
     <button class="track" type="button" data-board545="${i}">I'm on this 545</button>
   </section>`).join("") + back;
 }
@@ -562,7 +568,7 @@ function renderTrack(cards) {
       body += m.next545
         ? `<div class="row"><span class="k">Next <span class="route r-545 sm">545</span> you can catch</span><span class="v">${fmt(m.next545.t)}${tag(m.next545.live)}</span></div>
            <div class="row"><span class="k">Wait at Westlake</span><span class="v">${mins(m.next545.wait)}</span></div>
-           ${m.next545.end ? `<div class="row"><span class="k">Arrive ${esc(m.next545.endName.replace(/\s*(Park\s*(&|and)\s*Ride|P&R).*$/i, "") + " P&R")}</span><span class="v">${fmt(m.next545.end)}<span class="tag est">EST</span></span></div>` : ""}`
+           ${m.next545.end ? `<div class="row"><span class="k">Arrive ${esc(m.next545.endName)}</span><span class="v">${fmt(m.next545.end)}<span class="tag est">EST</span></span></div>` : ""}`
         : `<div class="row"><span class="k">Next 545 you can catch</span><span class="v">none found</span></div>`;
     }
   }
@@ -573,19 +579,18 @@ function renderTrack(cards) {
     <div class="actions">${t.boardStopId && !t.auto && (t.leg === "home" || t.leg === "office") ? `<button class="track stop arrow" type="button" data-nudge="-1" aria-label="Earlier ${esc(t.route)}" title="Earlier ${esc(t.route)}">◀</button><button class="track stop arrow" type="button" data-nudge="1" aria-label="Later ${esc(t.route)}" title="Later ${esc(t.route)}">▶</button>` : ""}${stopBtn}</div></section>`;
 }
 
-// Morning 545: find the departure from Bear Creek that's closest to now, let the rider confirm or nudge it, then track it.
+// Morning 545: find the departure from Redmond TC that's closest to now, let the rider confirm or nudge it, then track it.
 async function begin545() {
   try {
-    const r = await api(`arrivals-and-departures-for-stop/${BEAR_CREEK_STOP}`, { minutesBefore: 20, minutesAfter: 40 });
+    const r = await api(`arrivals-and-departures-for-stop/${REDMOND_TC_BOARD_STOP}`, { minutesBefore: 20, minutesAfter: 40 });
     const now = nowMs();
-    // Bear Creek is both the start of the inbound trips and the end of the outbound ones, so keep only buses that
-    // leave from here toward downtown (outbound trips have a "Redmond" headsign and can't be boarded here).
+    // Keep only buses heading toward downtown (the "Downtown Seattle" headsign), in case anything else calls at this bay.
     const c = (dedupeTrips(r.data.entry.arrivalsAndDepartures))
       .filter((a) => normRoute(a.routeShortName) === WESTLAKE_ROUTE && a.departureEnabled !== false && DOWNTOWN_RE.test(a.tripHeadsign))
       .map((a) => ({ a, ...live(a, "predictedDepartureTime", "scheduledDepartureTime") }))
       .map((x) => (x.t > 0 ? x : { ...x, ...live(x.a, "predictedArrivalTime", "scheduledArrivalTime") }))
       .sort((x, y) => x.t - y.t);
-    if (!c.length) throw new Error("No 545 departures to downtown found at Bear Creek P&R around now.");
+    if (!c.length) throw new Error("No 545 departures to downtown found at Redmond TC around now.");
     // Default to the next departure (or one that left in the last 2 minutes); "Earlier"/"Later" nudge from there.
     let i = c.findIndex((x) => x.t >= now - 2 * 60000);
     if (i < 0) i = c.length - 1;
@@ -678,7 +683,7 @@ function renderPick(cards) {
   }
   cards.innerHTML = `<section class="card best">
     <div class="top"><span class="route r-545">545</span><span class="head">${esc(x.a.tripHeadsign)}</span></div>
-    <div class="big">${x.t > nowMs() ? "Leaves" : "Left"} Bear Creek P&amp;R ${fmt(x.t)}${tag(x.live)}</div>
+    <div class="big">${x.t > nowMs() ? "Leaves" : "Left"} ${HOME_STOP_SHORT} ${fmt(x.t)}${tag(x.live)}</div>
     ${seattleHM(x.a.scheduledDepartureTime || x.t) === USUAL_545_DEPARTURE ? `<div class="row"><span class="k">Your usual ${USUAL_545_DEPARTURE.replace(/^0/, "")} AM bus</span></div>` : ""}
     <div class="row"><span class="k">Is this the bus you're on?</span></div>
     <div class="actions"><button class="track main" type="button" data-pick="yes">Yes, track it</button>
@@ -725,8 +730,8 @@ $("cards").addEventListener("click", (ev) => {
     const x = wait545.items[+bd.dataset.board545];
     if (!x) return;
     clearWait();
-    startTrack({ tripId: x.a.tripId, serviceDate: x.a.serviceDate, destId: (x.end && x.end.stopId) || BEAR_CREEK_STOP,
-      destName: x.end ? x.end.name : "Bear Creek P&R", route: "545", headsign: x.a.tripHeadsign, board: x.t, boardLive: x.live, leg: "545" });
+    startTrack({ tripId: x.a.tripId, serviceDate: x.a.serviceDate, destId: (x.end && x.end.stopId) || REDMOND_TC_DROP_STOP,
+      destName: x.end ? x.end.name : HOME_STOP_SHORT, route: "545", headsign: x.a.tripHeadsign, board: x.t, boardLive: x.live, leg: "545" });
     return;
   }
   const b = ev.target.closest("button[data-track]");
@@ -874,7 +879,7 @@ async function refresh(manual) {
       o.preferred = shared && !o.noRush;
       o.best = !!o.busA && recommended.has(o) && o.bus === firstBus;
     });
-    // Estimated arrival at the 545's last stop (Bear Creek P&R): live departure + scheduled run time.
+    // Estimated arrival at your home stop (Redmond TC): live departure + scheduled run time.
     const uniq = [...new Map(options.filter((o) => o.busA).map((o) => [o.busA.tripId, o.busA])).values()];
     const ends = new Map();
     (await Promise.allSettled(uniq.map(async (a) => [a.tripId, await endFor(a)]))).forEach((r) => { if (r.status === "fulfilled" && r.value[1]) ends.set(...r.value); });
@@ -938,7 +943,7 @@ function render() {
         rows.push(o.bus
           ? `<div class="row"><span class="k">Catch <span class="route r-545 sm">545</span> at</span><span class="v">${fmt(o.bus)}${tag(o.busLive)}</span></div>
              <div class="row"><span class="k">Wait at Westlake</span><span class="v">${mins(o.wait)}</span></div>
-             ${o.end ? `<div class="row"><span class="k">Arrive ${esc(o.endName.replace(/\s*(Park\s*(&|and)\s*Ride|P&R).*$/i, "") + " P&R")}</span><span class="v">${fmt(o.end)}<span class="tag est">EST</span></span></div>` : ""}`
+             ${o.end ? `<div class="row"><span class="k">Arrive ${esc(o.endName)}</span><span class="v">${fmt(o.end)}<span class="tag est">EST</span></span></div>` : ""}`
           : `<div class="row"><span class="k">Catch 545</span><span class="v">none found</span></div>`);
       }
       return `<section class="card${o.best ? " best" : ""}">

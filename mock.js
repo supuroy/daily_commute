@@ -21,9 +21,9 @@
       arr("33", "Downtown Seattle", B, "t3", min(11), false),
       arr("D Line", "Downtown Seattle", B, "t4", min(14), false),
     ],
-    // Inbound 545 departures from Bear Creek P&R (morning "I'm on the 545" picker)
-    "1_81755": [arr("545", "Redmond", "1_81755", "o0", min(0), true),   // outbound bus ending here: must NOT be offered
-      arr("545", "Downtown Seattle", "1_81755", "i0", min(-1), true), arr("545", "Downtown Seattle", "1_81755", "i1", min(14), false)],
+    // Inbound 545 departures from Redmond Transit Center Bay 6 (morning "I'm on the 545" picker)
+    "1_71954": [arr("545", "Redmond", "1_71954", "o0", min(0), true),   // wrong-direction bus: must NOT be offered
+      arr("545", "Downtown Seattle", "1_71954", "i0", min(-1), true), arr("545", "Downtown Seattle", "1_71954", "i1", min(14), false)],
     // Northbound 3rd Ave stops for the "To office" tab
     "1_590": [arr("24", "West Magnolia", "1_590", "n1", min(5), true), arr("33", "E Magnolia", "1_590", "n2", min(12), false),
       arr("24", "West Magnolia", "1_590", "n5", min(41), false), arr("33", "E Magnolia", "1_590", "n6", min(52), false)],
@@ -70,9 +70,9 @@
       { stops: [{ id: "1_3P", name: "3rd Ave & Pike St" }, { id: "1_mid", name: "Westlake Ave & 7th" }] });
     } else if (p.startsWith("trip-details/i")) {
       const id = p.split("/")[1];
-      const t0 = secOf(routes["1_81755"].find((a) => a.tripId === id).scheduledArrivalTime);
+      const t0 = secOf(routes["1_71954"].find((a) => a.tripId === id).scheduledArrivalTime);
       body = ok({ schedule: { stopTimes: [
-        { stopId: "1_81755", arrivalTime: t0 }, { stopId: "1_x1", arrivalTime: t0 + 1500 }, { stopId: "1_x2", arrivalTime: t0 + 2000 },
+        { stopId: "1_71954", arrivalTime: t0 }, { stopId: "1_x1", arrivalTime: t0 + 1500 }, { stopId: "1_x2", arrivalTime: t0 + 2000 },
         { stopId: "1_760", arrivalTime: t0 + 2400 }, { stopId: "1_790", arrivalTime: t0 + 2520 },
       ] }, status: { predicted: true, scheduleDeviation: 0, nextStop: "1_x1", nextStopTimeOffset: 300 } },
       { stops: [{ id: "1_x1", name: "Stewart St & 9th Ave" }, { id: "1_760", name: "5th Ave & Pine St" }] });
@@ -87,9 +87,10 @@
       const t0 = w ? secOf(w.scheduledDepartureTime) : 0;
       body = ok({ schedule: { stopTimes: [
         { stopId: "1_700", arrivalTime: t0, departureTime: t0 }, { stopId: "1_mid545", arrivalTime: t0 + 900, departureTime: t0 + 900 },
-        { stopId: "1_bc", arrivalTime: t0 + 2280, departureTime: t0 + 2280 },
+        { stopId: "1_71951", arrivalTime: t0 + 2100, departureTime: t0 + 2100 },   // Redmond TC Bay 3: your stop
+        { stopId: "1_bc", arrivalTime: t0 + 2400, departureTime: t0 + 2400 },      // trip carries on to Bear Creek (not your stop)
       ] }, status: { predicted: true, scheduleDeviation: 0, nextStop: "1_mid545", nextStopTimeOffset: 600 } },
-      { stops: [{ id: "1_bc", name: "Bear Creek Park & Ride" }, { id: "1_mid545", name: "Bellevue Transit Center" }] });
+      { stops: [{ id: "1_71951", name: "Redmond Transit Center - Bay 3" }, { id: "1_bc", name: "Bear Creek Park And Ride" }, { id: "1_mid545", name: "Bellevue Transit Center" }] });
     } else body = { code: 404, text: "mock: not found " + p };
     return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
   };
