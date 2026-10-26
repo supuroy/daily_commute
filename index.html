@@ -121,7 +121,7 @@ const WESTLAKE_ROUTE = "545";
 const LINK_STOP = "40_1108";                  // Westlake Station platform for trains toward Downtown Redmond
 const LINK_DEST_STOP = "40_E31-T2";           // Downtown Redmond Station
 const LINK_DEST_SHORT = "Downtown Redmond";
-const TO_LINK_BUFFER_MIN = { "24": 5, "33": 5, D: 5, SHUTTLE: 3 };   // walk from the first-leg drop-off down to the platform (an estimate: edit me)
+const TO_LINK_BUFFER_MIN = { "24": 0, "33": 0, D: 0, SHUTTLE: 0 };   // no buffer: you judge whether you can reach the platform in time
 const TO_545_BUFFER_MIN = { "24": 0, "33": 0, D: 2 };   // minutes between getting off the first bus and the 545 leaving Westlake (keys: normRoute)
 const REFRESH_SECONDS = 30;
 const TOP_N = 3;                              // show only the best N options (ranked by which 545 you catch)
@@ -409,7 +409,7 @@ function enterWait545() {
 }
 
 // ---------- Link 2 Line (Westlake -> Downtown Redmond) ----------
-const linkBuffer = (route) => TO_LINK_BUFFER_MIN[normRoute(route)] ?? 5;
+const linkBuffer = (route) => TO_LINK_BUFFER_MIN[normRoute(route)] ?? 0;
 
 async function loadLinks() {
   return (await getArrivals(LINK_STOP, 120))
@@ -1025,7 +1025,7 @@ function render() {
     · <a id="redetect">re-detect stop</a><br>
     Board and 545 times are <b>LIVE</b> when the bus reports a position, else <b>SCHED</b>. Ride time is scheduled, so "arrive" is an estimate.
     Shuttle times come from the published EG schedule (Mon–Fri), not live data.
-    2 Line times are from Westlake Station toward ${LINK_DEST_SHORT}, allowing ${TO_LINK_BUFFER_MIN["24"]} min from the bus drop-off (${TO_LINK_BUFFER_MIN.SHUTTLE} after the shuttle) to reach the platform; the short bus from there to Redmond TC isn't included.
+    2 Line times are the next trains from Westlake Station toward ${LINK_DEST_SHORT}, with no walking time allowed to reach the platform; the short bus from there to Redmond TC isn't included.
     Transfer gap to the 545: ${TO_545_BUFFER_MIN["24"]} min after the 24/33, ${TO_545_BUFFER_MIN.D} min after the D Line, ${SHUTTLE_WALK_MINUTES} min after the shuttle. Refreshes every ${REFRESH_SECONDS}s.`;
   $("foot").innerHTML += (track ? `<br>${alertsLine()}` : "") + `<br>API key: ${KEY === "TEST" ? "shared test key" : "your own key"}`;
   const ea = $("enableAlerts");
