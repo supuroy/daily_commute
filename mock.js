@@ -54,8 +54,8 @@
     } else if (p === "trip-details/tnext1") {   // the 24's next trip in its block: starts where trip t1 ended, then reaches 3rd & Pike
       const t0 = secOf(routes[B].find((a) => a.tripId === "t1").scheduledArrivalTime);
       body = ok({ schedule: { stopTimes: [
-        { stopId: "1_mid", arrivalTime: t0 + 240 }, { stopId: "1_3P", arrivalTime: t0 + 14 * 60 },
-      ] } }, { stops: [{ id: "1_3P", name: "3rd Ave & Pike St" }, { id: "1_mid", name: "Westlake Ave & 7th" }] });
+        { stopId: "1_mid", arrivalTime: t0 + 240 }, { stopId: "1_3P24", arrivalTime: t0 + 14 * 60 },   // the 24/33 use a different pole than the D Line
+      ] } }, { stops: [{ id: "1_3P24", name: "3rd Ave & Pike St" }, { id: "1_mid", name: "Westlake Ave & 7th" }] });
     } else if (p === "trip-details/t1") {   // ends before 3rd & Pike; the bus continues as trip "tnext1"
       const t0 = secOf(routes[B].find((a) => a.tripId === "t1").scheduledArrivalTime);
       body = ok({ serviceDate: svc, schedule: { nextTripId: "tnext1", stopTimes: [

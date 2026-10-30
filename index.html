@@ -223,8 +223,8 @@ async function api(path, params = {}) {
 
 // ---------- state ----------
 let origin = null;          // { id, name, direction, confirmed }
-let transferStopId = null;
 const rideSecs = new Map(); // tripId -> seconds from origin to 3rd & Pike
+const rideDest = new Map(); // tripId -> the stop id of "3rd Ave & Pike" on that trip
 let model = null;           // last good result ("To 545" tab)
 let officeModel = null;     // last good result ("To office" tab)
 let tab = "home";           // "home" | "office"
@@ -297,10 +297,10 @@ function findTransfer(td, originId) {
     const n = normName(stops.get(t.stopId));
     return n === TARGET_NAME || (n.includes("3rd") && n.includes("pike"));
   };
-  const idx = times.findIndex((t, i) => i > o && (t.stopId === transferStopId || hit(t)));
+  const idx = times.findIndex((t, i) => i > o && hit(t));
   if (idx < 0) return null;
-  transferStopId = times[idx].stopId;
-  return times[idx].arrivalTime - times[o].arrivalTime;
+  // Each route has its own pole for "3rd Ave & Pike" (the D Line uses one stop id, the 24/33 another), so report it per trip.
+  return { secs: times[idx].arrivalTime - times[o].arrivalTime, stopId: times[idx].stopId };
 }
 
 // The 24 and 33 "Downtown Seattle" trips end at 3rd & Cedar, and the same bus carries on as the next trip in its block
@@ -324,11 +324,12 @@ async function extendTrip(td) {
 async function rideFor(a, fromStopId) {
   if (rideSecs.has(a.tripId)) return rideSecs.get(a.tripId);
   let td = await api(`trip-details/${encodeURIComponent(a.tripId)}`, { serviceDate: a.serviceDate });
-  let secs = findTransfer(td, fromStopId || origin?.id);
-  if (secs == null) { td = await extendTrip(td); secs = findTransfer(td, fromStopId || origin?.id); }
-  if (secs == null) return null;
-  rideSecs.set(a.tripId, secs);
-  return secs;
+  let hit = findTransfer(td, fromStopId || origin?.id);
+  if (!hit) { td = await extendTrip(td); hit = findTransfer(td, fromStopId || origin?.id); }
+  if (!hit) return null;
+  rideSecs.set(a.tripId, hit.secs);
+  rideDest.set(a.tripId, hit.stopId);
+  return hit.secs;
 }
 
 // Scheduled minutes from the Westlake stop to your home stop on a 545 trip (Redmond TC; falls back to the trip's last stop). Cached per trip.
@@ -496,12 +497,24 @@ async function load545s() {
 }
 
 async function loadTrack() {
+  // Find your stop on the trip by id, or by name if that id isn't on this trip (routes use different poles for one stop).
+  const destIndex = (d) => {
+    const times = d.data.entry.schedule.stopTimes || [];
+    const nm = new Map((d.data.references.stops || []).map((s) => [s.id, s.name]));
+    let i = times.findIndex((t) => t.stopId === track.destId);
+    if (i < 0 && track.destName) i = times.findIndex((t) => normName(nm.get(t.stopId)) === normName(track.destName));
+    return i;
+  };
   let td = await api(`trip-details/${encodeURIComponent(track.tripId)}`, { serviceDate: track.serviceDate });
-  if (!(td.data.entry.schedule.stopTimes || []).some((t) => t.stopId === track.destId)) td = await extendTrip(td);
+  if (destIndex(td) < 0) td = await extendTrip(td);
   const e = td.data.entry, st = e.schedule.stopTimes || [];
   const names = new Map((td.data.references.stops || []).map((s) => [s.id, s.name]));
-  const di = st.findIndex((t) => t.stopId === track.destId);
+  const di = destIndex(td);
   if (di < 0) throw new Error("Your stop isn't on this trip.");
+  if (st[di].stopId !== track.destId) {   // remember the right pole for this ride
+    track.destId = st[di].stopId;
+    try { localStorage.setItem("track", JSON.stringify(track)); } catch {}
+  }
   const s = e.status || {};
   const live = !!s.predicted && Number.isFinite(s.scheduleDeviation);
   const dev = live ? s.scheduleDeviation : 0;
@@ -695,7 +708,7 @@ async function startBus(x, leg) {
       render();
       return;
     }
-    destId = transferStopId; destName = TRANSFER_STOP_NAME;
+    destId = rideDest.get(x.a.tripId); destName = TRANSFER_STOP_NAME;
   }
   startTrack({ tripId: x.a.tripId, serviceDate: x.a.serviceDate, destId, destName, route: x.a.routeShortName,
     headsign: x.a.tripHeadsign, board: x.t, boardLive: x.live, leg, boardStopId: x.stopId });
@@ -869,7 +882,7 @@ async function refresh(manual) {
     try { all = await getArrivals(origin.id, 60); }
     catch (e) {   // a cached stop id can go stale when the transit feed updates: re-detect once
       if (!/404/.test(e.message)) throw e;
-      origin = null; rideSecs.clear();
+      origin = null; rideSecs.clear(); rideDest.clear();
       try { localStorage.removeItem("origin:" + ORIGIN_STOP); } catch {}
       await resolveOrigin(true);
       all = await getArrivals(origin.id, 60);
@@ -902,7 +915,7 @@ async function refresh(manual) {
       const r = rides[i];
       const ride = r.status === "fulfilled" ? r.value : null;
       const o = { route: x.a.routeShortName, headsign: x.a.tripHeadsign, board: x.t, boardLive: x.live, ride,
-        tripId: x.a.tripId, serviceDate: x.a.serviceDate, destId: ride != null ? transferStopId : null, destName: TRANSFER_STOP_NAME };
+        tripId: x.a.tripId, serviceDate: x.a.serviceDate, destId: ride != null ? rideDest.get(x.a.tripId) : null, destName: TRANSFER_STOP_NAME };
       if (ride != null) {
         o.via = x.t + ride * 1000; o.viaLabel = "Arrive 3rd &amp; Pike";
         const ready = o.via + buffer545(o.route) * 60000;
@@ -1031,7 +1044,7 @@ function render() {
   const ea = $("enableAlerts");
   if (ea) ea.onclick = () => { unlockAudio(); askAlerts(); };
   const r = $("redetect");
-  if (r) r.onclick = () => { origin = null; try { localStorage.removeItem("origin:" + ORIGIN_STOP); } catch {} rideSecs.clear(); transferStopId = null; refresh(true); };
+  if (r) r.onclick = () => { origin = null; try { localStorage.removeItem("origin:" + ORIGIN_STOP); } catch {} rideSecs.clear(); rideDest.clear(); refresh(true); };
 }
 
 function renderOffice(cards) {
